@@ -1,0 +1,6 @@
+# Steam concurrent players log (tab-separated)
+# time_local	unix	game	appid	players
+# Leave Chat Helper running to collect overnight trends.
+2026-07-16T22:10:50	1784257850	The Quinfall	2294660	900
+2026-07-16T22:10:50	1784257850	The Quinfall	2294660	950
+2026-07-16T22:16:08	1784258168	The Quinfall	2294660	1006
