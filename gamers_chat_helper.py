@@ -599,7 +599,76 @@ JOB_LLM = {
         "repeat_penalty": 1.02, "frequency_penalty": 0.0, "presence_penalty": 0.0,
         "max_tokens": 280, "use_mood": False, "use_terms": False,
     },
+    # Clean dad jokes only — always family-safe, hard cap 150
+    "dadjoke": {
+        "temperature": 0.95, "top_p": 0.92, "top_k": 50, "min_p": 0.05,
+        "repeat_penalty": 1.12, "frequency_penalty": 0.25, "presence_penalty": 0.15,
+        "max_tokens": 80, "use_mood": False, "use_terms": False,
+    },
 }
+
+# Hard cap for dad jokes (independent of game limit when tighter)
+DAD_JOKE_LIMIT = 150
+
+# Clean dad jokes only — family-safe, under 150 chars (offline pack).
+DAD_JOKES = [
+    "I only know 25 letters of the alphabet. I don't know y.",
+    "I'm reading a book on anti-gravity. It's impossible to put down.",
+    "Why don't eggs tell jokes? They'd crack each other up.",
+    "I used to hate facial hair… then it grew on me.",
+    "Parallel lines have so much in common. It's a shame they'll never meet.",
+    "I asked my dog what's two minus two. He said nothing.",
+    "What do you call a fake noodle? An impasta.",
+    "I would tell you a construction joke, but I'm still working on it.",
+    "Why did the scarecrow win an award? He was outstanding in his field.",
+    "I told my wife she was drawing her eyebrows too high. She looked surprised.",
+    "What do you call cheese that isn't yours? Nacho cheese.",
+    "I used to be addicted to soap, but I'm clean now.",
+    "Why can't you give Elsa a balloon? Because she will let it go.",
+    "I'm terrified of elevators, so I'm taking steps to avoid them.",
+    "What did the ocean say to the beach? Nothing, it just waved.",
+    "I only know how to make alphabet soup… letter by letter.",
+    "Why did the bicycle fall over? It was two-tired.",
+    "I don't trust stairs. They're always up to something.",
+    "What do you call a bear with no teeth? A gummy bear.",
+    "I used to play piano by ear, but now I use my hands.",
+    "Why did the golfer bring two pairs of pants? In case he got a hole in one.",
+    "I told a joke about a roof. It went over everyone's head.",
+    "What's brown and sticky? A stick.",
+    "I know a lot of jokes about inactive volcanoes. They just don't erupt.",
+    "Why don't skeletons fight each other? They don't have the guts.",
+    "I named my dog Five Miles so I can say I walk Five Miles every day.",
+    "What do you call a sleeping bull? A bulldozer.",
+    "I asked the librarian if the library had books on paranoia. She whispered, they're right behind you.",
+    "Why did the cookie go to the doctor? Because it felt crummy.",
+    "I'm on a seafood diet. I see food and I eat it.",
+    "What do you call a fish wearing a bowtie? Sofishticated.",
+    "I used to be a banker but I lost interest.",
+    "Why can't your nose be 12 inches long? Because then it would be a foot.",
+    "I ordered a chicken and an egg online. I'll let you know which comes first.",
+    "What did one wall say to the other? I'll meet you at the corner.",
+    "I don't trust atoms. They make up everything.",
+    "Why did the math book look sad? It had too many problems.",
+    "I'm reading a horror story in braille. Something bad is about to happen… I can feel it.",
+    "What do you call a parade of rabbits hopping backwards? A receding hare-line.",
+    "I told my computer I needed a break, and it said no problem — it would go to sleep.",
+    "Why do cows have hooves instead of feet? Because they lactose.",
+    "I tried to catch fog yesterday. Mist.",
+    "What do you call a factory that sells passable products? A satisfactory.",
+    "I was going to tell a time-traveling joke, but you didn't like it.",
+    "Why did the tomato turn red? Because it saw the salad dressing.",
+    "I have a joke about pizza, but it's too cheesy.",
+    "What do you call an alligator in a vest? An investigator.",
+    "My belt holds my pants up, but the belt loops hold my belt up. I don't know who to trust.",
+    "Why don't oysters donate to charity? Because they're shellfish.",
+    "I used to hate facial recognition software… then it grew on me. Wait, wrong joke.",
+    "How does a penguin build its house? Igloos it together.",
+    "I got a job at a bakery because I kneaded dough.",
+    "What's the best thing about Switzerland? I don't know, but the flag is a big plus.",
+    "I would avoid the sushi if I was you. It's a little fishy.",
+    "Why did the coffee file a police report? It got mugged.",
+    "I only tell dad jokes on special occasions… like when people ask me to stop.",
+]
 
 # Noise intensity 0=sane … 4=pure mental chaos (NOT game-related).
 NOISE_LEVEL_LABELS = {
@@ -2152,11 +2221,23 @@ class GamersChatHelper:
             font=f_ui(11), text_color=C["faint"], anchor="w", wraplength=640, justify="left",
         )
         self.noise_hint.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
+        noise_btns = ctk.CTkFrame(parent, fg_color="transparent")
+        noise_btns.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
         ctk.CTkButton(
-            parent, text="Write chaos line", height=sz(42), font=f_ui(14, "bold"),
+            noise_btns, text="Write chaos line", height=sz(42), font=f_ui(14, "bold"),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.generate_noise,
-        ).pack(fill="x", padx=pad(14), pady=(0, pad(12)))
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
+        ctk.CTkButton(
+            noise_btns, text="Dad joke", height=sz(42), width=sz(120), font=f_ui(14, "bold"),
+            fg_color=C["info"], hover_color="#0ea5e9", text_color="#041018",
+            command=self.generate_dad_joke,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            parent,
+            text="Dad joke: always clean · max 150 characters · not game-related",
+            font=f_ui(11), text_color=C["faint"],
+        ).pack(anchor="w", padx=pad(14), pady=(0, pad(10)))
 
     def _job_card_header(self, parent, title: str, subtitle: str, accent: str = None):
         accent = accent or C["accent"]
@@ -3796,6 +3877,25 @@ class GamersChatHelper:
         lim = self.limit()
         cfg = self._job_cfg(job)
 
+        # Clean dad jokes — always family-safe
+        if job == "dadjoke":
+            cap = min(lim, DAD_JOKE_LIMIT)
+            base = (
+                "You write classic clean dad jokes for multiplayer chat.\n"
+                "ALWAYS family-friendly. G-rated. No innuendo, no swearing, no insults, "
+                "no dark humor, no politics, no adult topics.\n"
+                "Style: punny, wholesome, groan-worthy dad energy.\n"
+                "Prefer everyday topics (food, animals, school, sports, jobs) over games.\n"
+            )
+            base += (
+                "RULES:\n"
+                "- Output ONLY the joke text. No 'Here's a joke' preamble.\n"
+                f"- HARD CAP: {cap} characters.\n"
+                "- One joke only. No emojis, hashtags, markdown.\n"
+            )
+            base += self._anti_echo_block()
+            return base
+
         # Noise is intentionally NOT game-aware — intensity 0..4
         if job == "noise":
             level = int(self.noise_level_var.get()) if hasattr(self, "noise_level_var") else 3
@@ -4285,6 +4385,61 @@ class GamersChatHelper:
         )
         self.run_llm_async(prompt, job="banter")
 
+    def _dad_joke_cap(self) -> int:
+        return min(int(self.limit()), DAD_JOKE_LIMIT)
+
+    def _pick_dad_joke_local(self) -> str:
+        cap = self._dad_joke_cap()
+        recent = set(self.history[-15:])
+        pool = [j for j in DAD_JOKES if j not in recent and len(j) <= cap]
+        if not pool:
+            pool = [j for j in DAD_JOKES if len(j) <= cap] or list(DAD_JOKES)
+        line = random.choice(pool)
+        if len(line) > cap:
+            line = self.trim_to_limit(line) if len(line) > self.limit() else line[:cap]
+        return line
+
+    def generate_dad_joke(self):
+        """Always-clean dad joke for chat. Hard cap 150 (or lower game limit)."""
+        self._last_gen_mode = "dadjoke"
+        cap = self._dad_joke_cap()
+        prompt = (
+            f"Write ONE original clean dad joke under {cap} characters.\n"
+            "Family-friendly only. No innuendo, swearing, insults, or dark humor.\n"
+            "Classic pun energy. Output only the joke."
+        )
+
+        def done(reply: str):
+            if self._is_err(reply) or not reply or len(reply) > cap + 10:
+                reply = self._pick_dad_joke_local()
+                self.show_toast("Dad joke pack", kind="info")
+            else:
+                reply = self._clean_line(reply, cap)
+                # If model went off-brand, fall back
+                low = reply.lower()
+                dirty_bits = (
+                    " damn", " hell", " crap", "sexy", "nude", "kill", "drug",
+                    "nsfw", "****",
+                )
+                if any(b in f" {low}" for b in dirty_bits):
+                    reply = self._pick_dad_joke_local()
+                    self.show_toast("Kept it clean", kind="info")
+                else:
+                    reply = self._dedupe_against_history(reply, fallback=self._pick_dad_joke_local())
+            self._apply_line_to_outputs(reply, also_ai=True)
+            self.set_status(f"Dad joke · {len(reply)}/{cap}")
+
+        # Local pack often for snappy clean results
+        if random.random() < 0.40:
+            line = self._pick_dad_joke_local()
+            self.session_gens += 1
+            self.update_session_chip()
+            self._apply_line_to_outputs(line, also_ai=True)
+            self.set_status(f"Dad joke · pack · {len(line)}/{cap}")
+            return
+
+        self.run_llm_async(prompt, on_done=done, job="dadjoke")
+
     def generate_noise(self):
         """Non-game noise scaled by chaos slider (0 sane → 4 mental)."""
         self._last_gen_mode = "noise"
@@ -4439,6 +4594,8 @@ class GamersChatHelper:
             self.generate_lfg()
         elif mode == "noise":
             self.generate_noise()
+        elif mode == "dadjoke":
+            self.generate_dad_joke()
         elif mode == "spice" and self._selected_quick:
             self.spice_phrase(self._selected_quick)
         elif mode == "refine":

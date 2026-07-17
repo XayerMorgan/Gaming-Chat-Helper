@@ -102,7 +102,7 @@
             "CZ run? need a couple more, no sweat"
         ]
     },
-    "geometry": "1080x1849+-1034+2",
+    "geometry": "200x200+-1034+2",
     "hud_geometry": "520x262+513+176",
     "hud_mode": false,
     "always_on_top": true,
