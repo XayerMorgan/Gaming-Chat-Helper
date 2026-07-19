@@ -13,35 +13,36 @@
         "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister Clan to THE DEFIANT | Direct path to move up",
         "Welcome.  Join the chaos on discord: https://discord.gg/AsFa4UM3v"
     ],
-    "api_url": "http://localhost:1234/v1/chat/completions",
+    "api_url": "http://127.0.0.1:1234/v1/chat/completions",
     "default_game": "The Quinfall",
     "custom_quick": {
         "The Quinfall": []
     },
     "favorites": [
+        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only",
         "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up"
     ],
     "history": [
-        "Loot farm grind partner wanted, casual EXP grind",
-        "Defiants chill guild leveling, dungeons, WB, CZ. Zero stress, sister guild of The Defiants, direct move up.",
-        "gonna need more than that, fam. you got a WB? CZ? dungeon? or just chillin' with the grind?",
-        "DG ch 4? You got the gear for that speedrun? Or just wanna see who's fastest?",
-        "Squirt's got better luck next time, huh? \ud83d\ude04",
-        "DPS +7? That's got you, I think. You're gonna need more than that, fam. you got a WB? CZ? ; Defiants chill guild leveling, dungeons, WB, CZ. Z; Loot",
-        "Tried a little spam check? Probably just noise. Just trying to remember where I left the boots in that chest \u2014 need another day of grinding up there.",
-        "Spam check? Nah, just trying to keep track of my boots. Need a few more days of grinding up there before I get back on track.",
-        "Boots? Nah, just tracking grind. More days needed before I restart.",
-        "Another world boss hit? Probably just noise. You know it's worth grinding in the game after all.",
-        "Went to check the guild store again \u2014 maybe someone added a random gear bag that never was.",
-        "Guild store just got a vibe upgrade\u2014maybe someone spilled a glittery potion on the shelves? \ud83d\ude0f",
+        "The vending machine spat out a half-eaten banana that sang in the dark when it was turned off and had zero meaning\u2014because who needs *mean* to forget",
+        "TACOS",
+        "LFG loot grind \u2014 chill pace, no rush, just EXP and loot in open world.",
+        "XP grind at Arachnid Temple, partying, no rush\u2014just loot and level up.",
+        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only",
+        "Just got back from the WB\u2014huh, boss level grind? Thought I'd pass on some quiet downtime in the open world this morning.",
+        "Just finished the CZ run\u2014no loot, just vibes. Still got some XP grind in progress at Arachnid Temple. \ud83c\udf00",
+        "CZ done, no loot\u2014just vibes. XP grind at Arachnid Temple still going. \ud83d\udd01",
+        "Essence Refiner? That's a cool upgrade, but I'm still leveling up in the CZ grind\u2014no loot, just vibes.",
+        "Essence Refiner? Nice one, but I'm still grinding through the CZ\u2014no loot, just the vibe of it all.",
+        "I asked the librarian if the library had books on paranoia. She whispered, they're right behind you.",
+        "I respect moths for their commitment to the light even when the light is a mistake",
+        "someone once paid for premium on a rock and I respect the hustle",
+        "why do we park in driveways and drive on parkways who did this",
         "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up",
-        "That's some solid stuff, man. You got the vibe and the grind covered\u2014no fluff, just direct progression. Just wanted to say I'm in on it too, keep",
-        "Yeah, that's the kind of grind I love \u2014 no BS, just straight up progress. Me too, let's go!",
-        "That's some solid build, man \u2014 gotta respect the gear. You got the vibe and grind right?",
-        "That's some solid setup, man \u2014 gotta respect the g. You got the vibe and grind too much?",
-        "my shadow has better posture than I do",
-        "I fear success almost as much as I fear raw onions",
-        "The sky smelled like burnt popcorn and bad jokes."
+        "It's the sound of a clock ticking in hell for someone who never sleeps but dreams about milk and salt crusts at midnight.",
+        "Sell at 350,000",
+        "?",
+        "LFG Grim Point in Party Finder \u2014 chill only, @ Arachnid Temple.",
+        "Join The Defiants! Casual PvE, dungeons, & world bosses. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!"
     ],
     "copy_counts": {
         "Grind\u2019s a drag till you hit 70, then it\u2019s oh hey, loot again? \ud83d\ude05": 1,
@@ -50,7 +51,7 @@
         "Let\u2019s clear this dungeon quick\u2014loot\u2019s hot until the next WB spawns. Guild, ready when you are!": 1,
         "Need a party for CH4\u2014anyone got 30+ gear? Or just wanna loot with me? \ud83d\ude04": 1,
         "Looking for a chill dungeon party \u2014 solid guildies welcome! Gear & level flexible. Let\u2019s grind loot together \ud83c\udfaf": 1,
-        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up": 4,
+        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up": 6,
         "loot's gonna fill my bank till winter": 1,
         "u mean my grandma?": 1,
         "gotta have some Gap gear for that next CZ": 1,
@@ -67,7 +68,7 @@
         "typing with one hand snacks in the other": 1,
         "back whenever, got a long CZ kill log to finish up": 1,
         "Dungeon lfg, open to casuals & low-key drama. CZ runs optional, WB prep a plus.": 1,
-        "Join The Defiants! Casual PvE, dungeons, & world bosses. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!": 2,
+        "Join The Defiants! Casual PvE, dungeons, & world bosses. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!": 6,
         "LFG dungeon, casuals and low-key drama welcome": 1,
         "Loot farm duo looking for casual EXP grind partner": 2,
         "Dungeon partners wanted, casual leveling & loot.": 1,
@@ -94,7 +95,29 @@
         "That's some solid setup, man \u2014 gotta respect the g. You got the vibe and grind too much?": 1,
         "my shadow has better posture than I do": 1,
         "I fear success almost as much as I fear raw onions": 1,
-        "The sky smelled like burnt popcorn and bad jokes.": 1
+        "The sky smelled like burnt popcorn and bad jokes.": 1,
+        "My kid's new school backpack says I'm a grown-up now \u2014 but I still feel like a kid at heart.": 1,
+        "My kid's new school backpack says I'm a grown-up n; Join The Defiants | Chill Guild | Leveling, Dungeo; The sky smelled like burnt popcorn and bad": 1,
+        "My kid's school backpack says I'm a grown-up \u2014 but it doesn't have enough room for my jokes.": 1,
+        "I don't trust atoms. They make up everything.": 2,
+        "The vending machine spat out a half-eaten banana that sang in the dark when it was turned off and had zero meaning\u2014because who needs *mean* to forget": 1,
+        "TACOS": 1,
+        "LFG loot grind \u2014 chill pace, no rush, just EXP and loot in open world.": 1,
+        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only": 3,
+        "XP grind at Arachnid Temple, partying, no rush\u2014just loot and level up.": 1,
+        "Just got back from the WB\u2014huh, boss level grind? Thought I'd pass on some quiet downtime in the open world this morning.": 1,
+        "Just finished the CZ run\u2014no loot, just vibes. Still got some XP grind in progress at Arachnid Temple. \ud83c\udf00": 1,
+        "CZ done, no loot\u2014just vibes. XP grind at Arachnid Temple still going. \ud83d\udd01": 1,
+        "Essence Refiner? That's a cool upgrade, but I'm still leveling up in the CZ grind\u2014no loot, just vibes.": 1,
+        "Essence Refiner? Nice one, but I'm still grinding through the CZ\u2014no loot, just the vibe of it all.": 1,
+        "I asked the librarian if the library had books on paranoia. She whispered, they're right behind you.": 2,
+        "I respect moths for their commitment to the light even when the light is a mistake": 1,
+        "someone once paid for premium on a rock and I respect the hustle": 1,
+        "why do we park in driveways and drive on parkways who did this": 1,
+        "It's the sound of a clock ticking in hell for someone who never sleeps but dreams about milk and salt crusts at midnight.": 1,
+        "Sell at 350,000": 1,
+        "?": 2,
+        "LFG Grim Point in Party Finder \u2014 chill only, @ Arachnid Temple.": 1
     },
     "hidden_lines": {
         "The Quinfall": [
@@ -102,32 +125,94 @@
             "CZ run? need a couple more, no sweat"
         ]
     },
-    "geometry": "200x200+-1034+2",
-    "hud_geometry": "520x262+513+176",
+    "geometry": "1080x1829+-1301+109",
+    "hud_geometry": "2560x1009+513+176",
     "hud_mode": false,
     "always_on_top": true,
     "auto_copy": true,
     "mood": "Polite",
-    "activity": "Recruiting",
+    "activity": "General Chat",
     "intensity": 1,
     "noise_level": 4,
     "show_banner": true,
-    "font_scale": "L",
+    "font_scale": "XXL",
     "lfg_target": "EXP / Loot Grind",
     "lfg_need": "Chill only",
     "lfg_defaults": {
-        "The Quinfall": "EXP / Loot Grind"
+        "The Quinfall": "Grim Point"
     },
+    "lfg_locations": {},
+    "lfg_location_defaults": {
+        "The Quinfall": "Arachnid Temple"
+    },
+    "lfg_location": "Cemetery",
+    "lfg_party_finder": true,
     "chat_region": {
         "left": 28,
         "top": 764,
         "right": 467,
         "bottom": 982
     },
+    "market_region": {
+        "left": 111,
+        "top": 61,
+        "right": 1628,
+        "bottom": 1047
+    },
+    "economy_item": "",
+    "economy_undercut": "5",
     "ocr_prefer_last_line": true,
-    "generator_intent": "noise",
+    "generator_intent": "recruit",
     "show_advanced": false,
     "onboarding_done": true,
     "steam_log_enabled": true,
-    "steam_log_minutes": 15
+    "steam_log_minutes": 30,
+    "house_styles": {},
+    "focus_mode": false,
+    "hotkeys_enabled": true,
+    "clip_watch": true,
+    "macros": [
+        "Sell at 1,450,000",
+        "",
+        ""
+    ],
+    "economy_history": [
+        {
+            "when": "07/18 14:13",
+            "ts": 1784402013.9523623,
+            "game": "The Quinfall",
+            "item": "troll hide",
+            "suggest": "?",
+            "wts": "?",
+            "comps": "NONE",
+            "low": "?",
+            "high": "?",
+            "engine": "local VL"
+        },
+        {
+            "when": "07/18 14:13",
+            "ts": 1784402033.012841,
+            "game": "The Quinfall",
+            "item": "troll hide",
+            "suggest": "?",
+            "wts": "?",
+            "comps": "NONE",
+            "low": "?",
+            "high": "?",
+            "engine": "local VL"
+        },
+        {
+            "when": "07/18 14:14",
+            "ts": 1784402064.199365,
+            "game": "The Quinfall",
+            "item": "Purified Veltryn",
+            "suggest": "1,450,000",
+            "wts": "Sell at 1,450,000",
+            "comps": "1,490,000, 1,489,999, 1,475,000, 1,469,999, 1,450,000, 1,420,420, 1,400,000, 1,111,111",
+            "low": "1,420,420",
+            "high": "1,498,000",
+            "engine": "local VL\u00b7reprice"
+        }
+    ],
+    "flip_fee": "5"
 }
