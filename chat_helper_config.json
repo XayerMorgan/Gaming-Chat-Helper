@@ -145,7 +145,7 @@
     "lfg_location_defaults": {
         "The Quinfall": "Arachnid Temple"
     },
-    "lfg_location": "Cemetery",
+    "lfg_location": "Arachnid Temple",
     "lfg_party_finder": true,
     "chat_region": {
         "left": 28,
@@ -162,11 +162,12 @@
     "economy_item": "",
     "economy_undercut": "5",
     "ocr_prefer_last_line": true,
-    "generator_intent": "recruit",
+    "generator_intent": "reply",
     "show_advanced": false,
     "onboarding_done": true,
     "steam_log_enabled": true,
     "steam_log_minutes": 30,
+    "steam_region_focus": "All",
     "house_styles": {},
     "focus_mode": false,
     "hotkeys_enabled": true,

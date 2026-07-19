@@ -75,7 +75,7 @@ if _HAS_TESS:
 # ---------------------------------------------------------------------------
 # Version / paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "6.3"
+APP_VERSION = "6.4"
 
 # Intent-driven generator (single surface; not separate tool tabs)
 INTENT_OPTIONS = ("lfg", "activity", "reply", "recruit", "noise")
@@ -91,6 +91,37 @@ STEAM_PLAYERS_URL = "https://api.steampowered.com/ISteamUserStats/GetNumberOfCur
 STEAM_LIVE_INTERVAL_S = 90
 STEAM_LOG_INTERVAL_S = 15 * 60  # 15 min — good overnight density; Steam allows much more
 STEAM_LOG_INTERVAL_CHOICES = (15, 30, 60)  # minutes
+# Steam GetNumberOfCurrentPlayers is GLOBAL only (one AppID for Quinfall).
+# NA / Europe / Asia below are prime-time slices of that global series (evening hours
+# in each region’s timezone) — not separate Steam region servers.
+STEAM_REGION_ORDER = ("NA", "Europe", "Asia")
+STEAM_REGIONS = {
+    "NA": {
+        "label": "NA",
+        "long": "North America",
+        "tz": "America/New_York",
+        "utc_offset_std": -5,  # fallback if zoneinfo unavailable
+        "prime_hours": (17, 18, 19, 20, 21, 22, 23),  # local evening
+        "off_hours": (3, 4, 5, 6, 7, 8, 9),
+    },
+    "Europe": {
+        "label": "EU",
+        "long": "Europe",
+        "tz": "Europe/Berlin",
+        "utc_offset_std": 1,
+        "prime_hours": (17, 18, 19, 20, 21, 22, 23),
+        "off_hours": (3, 4, 5, 6, 7, 8, 9),
+    },
+    "Asia": {
+        "label": "Asia",
+        "long": "Asia",
+        "tz": "Asia/Shanghai",
+        "utc_offset_std": 8,
+        "prime_hours": (17, 18, 19, 20, 21, 22, 23),
+        "off_hours": (3, 4, 5, 6, 7, 8, 9),
+    },
+}
+STEAM_REGION_FOCUS_OPTIONS = ("All", "NA", "Europe", "Asia")
 CONFIG_FILE = "chat_helper_config.json"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, CONFIG_FILE)
@@ -1166,6 +1197,10 @@ class GamersChatHelper:
         self._steam_history: list[tuple[float, int]] = []  # (unix, players) for current game chart
         self.steam_log_enabled = tk.BooleanVar(value=bool(getattr(self, "saved_steam_log_enabled", True)))
         self.steam_log_minutes = tk.IntVar(value=int(getattr(self, "saved_steam_log_minutes", 15)))
+        _reg = str(getattr(self, "saved_steam_region_focus", "All") or "All")
+        if _reg not in STEAM_REGION_FOCUS_OPTIONS:
+            _reg = "All"
+        self.steam_region_focus = tk.StringVar(value=_reg)
 
         self.game_var = tk.StringVar(value=self.default_game)
         self.mood_var = tk.StringVar(value=self.saved_mood)
@@ -1306,6 +1341,7 @@ class GamersChatHelper:
         self.saved_font_scale = "M"
         self.saved_steam_log_enabled = True
         self.saved_steam_log_minutes = 15
+        self.saved_steam_region_focus = "All"
         self.saved_lfg_target = "EXP / Loot Grind"
         self.saved_lfg_need = "Anyone"
         self.saved_lfg_defaults: dict[str, str] = {}
@@ -1404,6 +1440,10 @@ class GamersChatHelper:
                 if sm not in STEAM_LOG_INTERVAL_CHOICES:
                     sm = 15
                 self.saved_steam_log_minutes = sm
+                srf = str(data.get("steam_region_focus", "All") or "All")
+                self.saved_steam_region_focus = (
+                    srf if srf in STEAM_REGION_FOCUS_OPTIONS else "All"
+                )
                 hs = data.get("house_styles") or {}
                 if isinstance(hs, dict):
                     self.saved_house_styles = {
@@ -1503,6 +1543,11 @@ class GamersChatHelper:
                 self.steam_log_minutes.get()
                 if hasattr(self, "steam_log_minutes")
                 else getattr(self, "saved_steam_log_minutes", 15)
+            ),
+            "steam_region_focus": (
+                self.steam_region_focus.get()
+                if hasattr(self, "steam_region_focus")
+                else getattr(self, "saved_steam_region_focus", "All")
             ),
             "house_styles": self._house_styles_for_save(),
             "focus_mode": bool(
@@ -2422,12 +2467,10 @@ class GamersChatHelper:
         self.steam_dot.bind("<Button-1>", lambda e: self.open_steam_trends())
         tip(
             self.steam_dot,
-            "STEAM PLAYER COUNT (not AI)\n"
-            "How many people are playing this game on Steam right now\n"
-            "(concurrent players from Steam’s public API).\n"
-            "Updates about every 90 seconds while the app is open.\n"
-            "Click → Setup chart & overnight log file.\n"
-            "Shows “n/a” if the game has no Steam AppID.",
+            "STEAM PLAYER COUNT (not AI) — GLOBAL total for this AppID\n"
+            "(Steam does not publish separate NA / Europe / Asia counts for Quinfall).\n"
+            "Chip may show which regions are in local evening prime right now.\n"
+            "Click → Setup for chart, high/low report, and region lens (NA/EU/Asia).",
         )
 
         self.llm_dot = ctk.CTkLabel(
@@ -4300,9 +4343,40 @@ class GamersChatHelper:
         tip(
             self.steam_chart_canvas,
             "Steam concurrent players over real time (X = clock time).\n"
-            "Dots = samples. Peak/min marked on the chart.\n"
-            "Full high/low + trend report is under the graph.",
+            "Steam API is GLOBAL only (one world total for Quinfall).\n"
+            "NA / Europe / Asia below = prime-time slices of that global total.",
         )
+
+        # Region focus: All / NA / Europe / Asia (prime-time analysis of global series)
+        reg_row = ctk.CTkFrame(steam_box, fg_color="transparent")
+        reg_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        ctk.CTkLabel(
+            reg_row, text="Region lens", font=f_ui(11, "bold"), text_color=C["muted"],
+        ).pack(side="left", padx=(0, pad(8)))
+        self.steam_region_seg = ctk.CTkSegmentedButton(
+            reg_row,
+            values=list(STEAM_REGION_FOCUS_OPTIONS),
+            font=f_ui(12, "bold"),
+            height=sz(30),
+            selected_color=C["info"],
+            selected_hover_color="#0ea5e9",
+            unselected_color=C["surface"],
+            unselected_hover_color=C["hover"],
+            command=self.on_steam_region_focus,
+        )
+        self.steam_region_seg.set(self.steam_region_focus.get())
+        self.steam_region_seg.pack(side="left", fill="x", expand=True)
+        tip(
+            self.steam_region_seg,
+            "Steam does NOT publish separate NA/EU/Asia player counts for Quinfall.\n"
+            "This lens compares the GLOBAL concurrent total during each region’s\n"
+            "local evening (prime) vs late night (off-peak).\n"
+            "Pick a region to emphasize that window in the report + Discord copy.",
+        )
+        self.steam_region_now = ctk.CTkLabel(
+            reg_row, text="", font=f_ui(11), text_color=C["faint"],
+        )
+        self.steam_region_now.pack(side="left", padx=(pad(10), 0))
 
         # High / low population report + trend analysis (full log, not just chart window)
         report_box = ctk.CTkFrame(steam_box, fg_color=C["surface"], corner_radius=10)
@@ -4310,7 +4384,7 @@ class GamersChatHelper:
         report_head = ctk.CTkFrame(report_box, fg_color="transparent")
         report_head.pack(fill="x", padx=pad(12), pady=(pad(10), pad(2)))
         ctk.CTkLabel(
-            report_head, text="POPULATION REPORT · HIGH / LOW + TRENDS",
+            report_head, text="POPULATION REPORT · HIGH / LOW + TRENDS + REGIONS",
             font=f_ui(10, "bold"), text_color=C["faint"],
         ).pack(side="left")
         self.steam_pop_copy_btn = ctk.CTkButton(
@@ -4322,8 +4396,8 @@ class GamersChatHelper:
         self.steam_pop_copy_btn.pack(side="right")
         tip(
             self.steam_pop_copy_btn,
-            "Copy the full population report to the clipboard\n"
-            "(Discord-friendly code block) so you can paste it in chat.",
+            "Copy the full population report (including NA/EU/Asia prime slices)\n"
+            "as a Discord-friendly code block.",
         )
         self.steam_pop_report = ctk.CTkLabel(
             report_box,
@@ -4334,9 +4408,9 @@ class GamersChatHelper:
         self.steam_pop_report.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
         tip(
             self.steam_pop_report,
-            "Uses the full log for this game (all samples in steam_players_log.txt).\n"
-            "High/low, averages, slope trend, hour-of-day peaks, recent vs earlier windows.\n"
-            "Use Copy for Discord to paste this summary elsewhere.",
+            "Full-log high/low + trends.\n"
+            "NA / Europe / Asia = evening vs off-peak averages of the GLOBAL Steam total\n"
+            "(not separate regional servers — Steam doesn’t expose those).",
         )
         self._steam_pop_report_text = ""
 
@@ -4575,8 +4649,90 @@ class GamersChatHelper:
         except Exception:
             pass
 
+    def _steam_region_local_hour(self, unix: float, region_key: str) -> int:
+        """Local hour (0–23) for a region timezone at unix time."""
+        meta = STEAM_REGIONS.get(region_key) or {}
+        try:
+            from zoneinfo import ZoneInfo
+            from datetime import datetime
+
+            tz = ZoneInfo(str(meta.get("tz") or "UTC"))
+            return int(datetime.fromtimestamp(float(unix), tz=tz).hour)
+        except Exception:
+            # Fixed offset fallback (ignores DST)
+            off = int(meta.get("utc_offset_std", 0))
+            utc_h = int(time.gmtime(float(unix)).tm_hour)
+            return (utc_h + off) % 24
+
+    def _steam_region_is_prime(self, unix: float, region_key: str) -> bool:
+        meta = STEAM_REGIONS.get(region_key) or {}
+        hours = meta.get("prime_hours") or ()
+        return self._steam_region_local_hour(unix, region_key) in hours
+
+    def _steam_region_is_off(self, unix: float, region_key: str) -> bool:
+        meta = STEAM_REGIONS.get(region_key) or {}
+        hours = meta.get("off_hours") or ()
+        return self._steam_region_local_hour(unix, region_key) in hours
+
+    def _steam_regions_in_prime_now(self, now: Optional[float] = None) -> list[str]:
+        now = now if now is not None else time.time()
+        out = []
+        for key in STEAM_REGION_ORDER:
+            if self._steam_region_is_prime(now, key):
+                out.append(STEAM_REGIONS[key]["label"])
+        return out
+
+    def _steam_format_header_label(self, count: Optional[int], status: str = "ok") -> tuple[str, str]:
+        """Header chip text + color. Always global count; annotate which regions are in prime."""
+        if status == "err":
+            return "Players · err", C["warn"]
+        if status == "offline":
+            return "Players · offline", C["faint"]
+        if status == "na":
+            return "Players · n/a", C["faint"]
+        if status == "loading":
+            return "Players · …", C["faint"]
+        if count is None:
+            return "Players · ?", C["warn"]
+        primes = self._steam_regions_in_prime_now()
+        base = f"Players · {self._format_player_count(count)}"
+        if primes:
+            return f"{base} · {'/'.join(primes)} prime", C["info"]
+        return f"{base} · global", C["info"]
+
+    def on_steam_region_focus(self, choice: str = None):
+        if choice is None and hasattr(self, "steam_region_focus"):
+            choice = self.steam_region_focus.get()
+        choice = str(choice or "All")
+        if choice not in STEAM_REGION_FOCUS_OPTIONS:
+            choice = "All"
+        if hasattr(self, "steam_region_focus"):
+            self.steam_region_focus.set(choice)
+        if hasattr(self, "steam_region_seg"):
+            try:
+                self.steam_region_seg.set(choice)
+            except Exception:
+                pass
+        self.save_settings()
+        self.update_steam_pop_report()
+        self._update_steam_region_now_label()
+        self.show_toast(f"Steam region lens · {choice}", kind="info")
+
+    def _update_steam_region_now_label(self):
+        if not hasattr(self, "steam_region_now"):
+            return
+        primes = self._steam_regions_in_prime_now()
+        if primes:
+            txt = f"Now in prime: {', '.join(primes)}"
+        else:
+            txt = "Now: no major region in evening prime"
+        try:
+            self.steam_region_now.configure(text=txt)
+        except Exception:
+            pass
+
     def _fetch_steam_player_count(self, appid: int) -> tuple[Optional[int], str, str]:
-        """Returns (count, label, color). Label = concurrent Steam players for this game."""
+        """Returns (count, label, color). Global concurrent Steam players for this app."""
         try:
             r = requests.get(
                 STEAM_PLAYERS_URL,
@@ -4588,7 +4744,8 @@ class GamersChatHelper:
             data = r.json().get("response") or {}
             if int(data.get("result", 0)) == 1 and "player_count" in data:
                 count = int(data["player_count"])
-                return count, f"Players · {self._format_player_count(count)}", C["info"]
+                label, color = self._steam_format_header_label(count, "ok")
+                return count, label, color
             return None, "Players · ?", C["warn"]
         except Exception:
             return None, "Players · offline", C["faint"]
@@ -4605,6 +4762,7 @@ class GamersChatHelper:
             self._set_steam_label("Players · n/a", C["faint"])
             self._steam_history = []
             self.root.after(0, self.draw_steam_chart)
+            self.root.after(0, self._update_steam_region_now_label)
             return
 
         self._set_steam_label("Players · …", C["faint"])
@@ -4619,6 +4777,7 @@ class GamersChatHelper:
                     return
                 self._steam_player_count = count
                 self._set_steam_label(label, color)
+                self._update_steam_region_now_label()
                 if count is not None:
                     self._note_steam_session_peak(count)
                     self._maybe_log_steam_players(appid, game_name, count)
@@ -4934,20 +5093,107 @@ class GamersChatHelper:
 
         if best_h is not None and worst_h is not None:
             lines.append(
-                f"By hour of day (local): busiest {fmt_hour(best_h)} (avg {fmt_n(best_avg)}) · "
+                f"By hour of day (local PC): busiest {fmt_hour(best_h)} (avg {fmt_n(best_avg)}) · "
                 f"quietest {fmt_hour(worst_h)} (avg {fmt_n(worst_avg)})"
             )
 
-        # Simple advice
+        # ---- NA / Europe / Asia prime-time slices of GLOBAL Steam total ----
+        # Steam does not publish separate regional concurrent counts for Quinfall.
+        lines.append(
+            "REGIONS (Steam global total only — sliced by each region’s local evening):"
+        )
+        focus = "All"
+        if hasattr(self, "steam_region_focus"):
+            try:
+                focus = self.steam_region_focus.get() or "All"
+            except Exception:
+                focus = "All"
+        region_stats: dict[str, dict] = {}
+        for key in STEAM_REGION_ORDER:
+            meta = STEAM_REGIONS[key]
+            prime_rows = [r for r in rows if self._steam_region_is_prime(r[0], key)]
+            off_rows = [r for r in rows if self._steam_region_is_off(r[0], key)]
+            p_avg = avg_rows(prime_rows)
+            o_avg = avg_rows(off_rows)
+            p_hi = max((r[1] for r in prime_rows), default=None)
+            p_lo = min((r[1] for r in prime_rows), default=None)
+            in_prime = self._steam_region_is_prime(now_t, key)
+            lift = None
+            if p_avg is not None and o_avg is not None and o_avg > 0:
+                lift = (p_avg - o_avg) / o_avg * 100.0
+            region_stats[key] = {
+                "prime_n": len(prime_rows),
+                "off_n": len(off_rows),
+                "p_avg": p_avg,
+                "o_avg": o_avg,
+                "p_hi": p_hi,
+                "p_lo": p_lo,
+                "in_prime": in_prime,
+                "lift": lift,
+            }
+            p_txt = fmt_n(p_avg) if p_avg is not None else "—"
+            o_txt = fmt_n(o_avg) if o_avg is not None else "—"
+            hi_lo = ""
+            if p_hi is not None and p_lo is not None:
+                hi_lo = f" · prime high {fmt_n(p_hi)} / low {fmt_n(p_lo)}"
+            lift_txt = f" · evening +{lift:.0f}% vs late-night" if lift is not None else ""
+            now_tag = " · NOW IN PRIME" if in_prime else ""
+            mark = "► " if focus == key else "  "
+            lines.append(
+                f"{mark}{meta['label']:4} ({meta['long']}): "
+                f"evening avg {p_txt} (n={len(prime_rows)}) · "
+                f"off-peak avg {o_txt} (n={len(off_rows)})"
+                f"{hi_lo}{lift_txt}{now_tag}"
+            )
+
+        primes_now = self._steam_regions_in_prime_now(now_t)
+        if primes_now:
+            lines.append(f"Right now (clock): {', '.join(primes_now)} evening prime · global pop {fmt_n(now_v)}")
+        else:
+            lines.append(f"Right now (clock): between major region primes · global pop {fmt_n(now_v)}")
+
+        # Focused region: trend using only that region’s prime samples
+        if focus in STEAM_REGIONS:
+            meta = STEAM_REGIONS[focus]
+            focus_rows = [r for r in rows if self._steam_region_is_prime(r[0], focus)]
+            if len(focus_rows) >= 3:
+                f_slope = self._steam_slope_per_hour(focus_rows)
+                f_vals = [r[1] for r in focus_rows]
+                f_mean = self._steam_mean(f_vals)
+                f_trend = self._steam_trend_label(f_slope, f_mean)
+                f_hi, f_lo = max(f_vals), min(f_vals)
+                lines.append(
+                    f"Focus {meta['label']} evening only: trend {f_trend} ({fmt_slope(f_slope)}) · "
+                    f"avg {fmt_n(f_mean)} · high {fmt_n(f_hi)} · low {fmt_n(f_lo)} · n={len(focus_rows)}"
+                )
+            else:
+                lines.append(
+                    f"Focus {meta['label']}: need more evening samples (have {len(focus_rows)}) "
+                    "— leave app open across more nights."
+                )
+
+        # Simple advice (prefer focused region if set)
         if trend_6 == "rising" and vs_mean_pct > 0:
-            advice = "Advice: pop climbing and above avg — good window for LFG / listings."
+            advice = "Advice: global pop climbing and above avg — good window for LFG / listings."
         elif trend_6 == "falling" and vs_mean_pct < 0:
             advice = "Advice: cooling off and below avg — quieter grind / undercut less urgently."
+        elif primes_now:
+            advice = (
+                f"Advice: {', '.join(primes_now)} in evening prime now — "
+                "expect more social/market activity if those regions play Quinfall."
+            )
         elif best_h is not None and int(time.localtime(now_t).tm_hour) == best_h:
-            advice = "Advice: you're in a historically busy hour for this log — market/LFG may move faster."
+            advice = "Advice: historically busy hour on your PC clock — market/LFG may move faster."
         else:
-            advice = "Advice: more overnight samples → stronger hour-of-day and trend signals."
+            advice = (
+                "Advice: more overnight samples → stronger NA/EU/Asia prime signals. "
+                "Steam only publishes one global concurrent total."
+            )
         lines.append(advice)
+        lines.append(
+            "Note: NA/EU/Asia are NOT separate Steam player counts — "
+            "they are time-of-day lenses on the same global total."
+        )
 
         return "\n".join(lines)
 
@@ -4979,9 +5225,15 @@ class GamersChatHelper:
             self.show_toast("Nothing to copy yet — need log samples", kind="warn")
             return
         game = self.game_var.get() if hasattr(self, "game_var") else "Game"
+        focus = "All"
+        if hasattr(self, "steam_region_focus"):
+            try:
+                focus = self.steam_region_focus.get() or "All"
+            except Exception:
+                pass
         # Discord mono block reads cleanly in channels
         payload = (
-            f"**Steam pop · {game}**\n"
+            f"**Steam pop · {game}** · lens: {focus} (global Steam total)\n"
             f"```\n{text}\n```"
         )
         try:
