@@ -164,8 +164,9 @@ HELP_CONTEXT = {
         "LIBRARY\n\n"
         "Your history and favorites live here.\n\n"
         "• Click a line to re-copy\n"
+        "• Checkbox to multi-select · Delete selected for batch remove\n"
         "• Star to pin favorites\n"
-        "• Delete to forget\n"
+        "• Delete (⌫) to forget one line\n"
         "• Manage stock for built-in game lines\n\n"
         "Open Help → Full Manual for more."
     ),
@@ -246,8 +247,9 @@ C = {
     "hover": "#242b38",
     "line": "#2a3140",
     "text": "#e8eaed",
-    "muted": "#8b93a7",
-    "faint": "#5c6578",
+    # Secondary labels ≥ ~4.5:1 on elevated/surface (WCAG AA polish)
+    "muted": "#a8b0c0",
+    "faint": "#8b95a8",
     "accent": "#7c6cff",
     "accent_h": "#6a5af0",
     "success": "#22c55e",
@@ -1408,11 +1410,17 @@ class GamersChatHelper:
         self.generator_intent = tk.StringVar(value=intent0)
         self.show_advanced = tk.BooleanVar(value=bool(getattr(self, "saved_show_advanced", False)))
         self.onboarding_done = bool(getattr(self, "saved_onboarding_done", False))
+        self.ai_seed_var = tk.StringVar(value=str(getattr(self, "saved_ai_seed", "") or ""))
+        self.ai_seed_enabled = tk.BooleanVar(
+            value=bool(getattr(self, "saved_ai_seed_enabled", False))
+        )
 
         self.history: list[str] = list(self.saved_history)
         self.favorites: list[str] = list(self.saved_favorites)
         self.copy_counts: dict[str, int] = dict(self.saved_copy_counts)
         self.hidden_lines: dict[str, list[str]] = dict(self.saved_hidden_lines)
+        # Library multi-select (phrases checked for batch delete)
+        self._library_selected: set[str] = set()
 
         self._busy = False
         self._last_variants: list[str] = []
@@ -1535,6 +1543,8 @@ class GamersChatHelper:
         self.saved_generator_intent = "lfg"
         self.saved_show_advanced = False
         self.saved_onboarding_done = False
+        self.saved_ai_seed = ""
+        self.saved_ai_seed_enabled = False
         self.saved_house_styles: dict[str, str] = {}
         # Per-game bags (chat/market regions, LFG, economy, macros, …)
         self.game_settings: dict[str, dict] = {}
@@ -1611,6 +1621,8 @@ class GamersChatHelper:
                 self.saved_generator_intent = gi if gi in INTENT_OPTIONS else "lfg"
                 self.saved_show_advanced = bool(data.get("show_advanced", False))
                 self.saved_onboarding_done = bool(data.get("onboarding_done", False))
+                self.saved_ai_seed = str(data.get("ai_seed", "") or "")[:240]
+                self.saved_ai_seed_enabled = bool(data.get("ai_seed_enabled", False))
                 self.saved_focus_mode = bool(data.get("focus_mode", False))
                 self.saved_hotkeys_enabled = bool(data.get("hotkeys_enabled", True))
                 self.saved_clip_watch = bool(data.get("clip_watch", True))
@@ -1775,6 +1787,16 @@ class GamersChatHelper:
                 else getattr(self, "saved_show_advanced", False)
             ),
             "onboarding_done": bool(getattr(self, "onboarding_done", False)),
+            "ai_seed": (
+                (self.ai_seed_var.get() or "").strip()[:240]
+                if hasattr(self, "ai_seed_var")
+                else getattr(self, "saved_ai_seed", "")
+            ),
+            "ai_seed_enabled": bool(
+                self.ai_seed_enabled.get()
+                if hasattr(self, "ai_seed_enabled")
+                else getattr(self, "saved_ai_seed_enabled", False)
+            ),
             "steam_log_enabled": bool(
                 self.steam_log_enabled.get()
                 if hasattr(self, "steam_log_enabled")
@@ -1838,6 +1860,80 @@ class GamersChatHelper:
         game = game or (self.game_var.get() if hasattr(self, "game_var") else "")
         styles = getattr(self, "house_styles", None) or getattr(self, "saved_house_styles", {}) or {}
         return str(styles.get(game, "") or "").strip()[:500]
+
+    def clear_ai_seed(self):
+        if hasattr(self, "ai_seed_var"):
+            self.ai_seed_var.set("")
+        self.save_settings()
+        self.show_toast("AI seed cleared", kind="info")
+
+    def _on_ai_seed_enabled_changed(self):
+        self._sync_ai_seed_entry_state()
+        self.save_settings()
+        on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
+        self.show_toast("AI seed ON" if on else "AI seed OFF", kind="ok" if on else "info")
+
+    def _sync_ai_seed_entry_state(self):
+        """Show seed field only when Use seed is ON (cuts vertical clutter)."""
+        on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
+        if hasattr(self, "ai_seed_row"):
+            try:
+                if on:
+                    if not self.ai_seed_row.winfo_ismapped():
+                        self.ai_seed_row.pack(fill="x", padx=pad(14), pady=(0, pad(10)))
+                else:
+                    self.ai_seed_row.pack_forget()
+            except Exception:
+                pass
+        if hasattr(self, "ai_seed_entry"):
+            try:
+                self.ai_seed_entry.configure(
+                    text_color=C["text"] if on else C["muted"],
+                    border_color=C["accent"] if on else C["line"],
+                )
+            except Exception:
+                pass
+        if hasattr(self, "ai_seed_enabled_cb"):
+            try:
+                self.ai_seed_enabled_cb.configure(
+                    text_color=C["success"] if on else C["muted"],
+                )
+            except Exception:
+                pass
+
+    def _ai_seed_text(self) -> str:
+        """
+        Shared Chat Generator AI seed — only when “Use seed” is ON.
+        Text can stay filled while the toggle is off.
+        """
+        if hasattr(self, "ai_seed_enabled"):
+            try:
+                if not bool(self.ai_seed_enabled.get()):
+                    return ""
+            except Exception:
+                return ""
+        elif not getattr(self, "saved_ai_seed_enabled", False):
+            return ""
+        if hasattr(self, "ai_seed_var"):
+            return (self.ai_seed_var.get() or "").strip()[:240]
+        return str(getattr(self, "saved_ai_seed", "") or "").strip()[:240]
+
+    def _ai_seed_prompt_block(self, *, strict: bool = False) -> str:
+        """
+        Inject optional shared seed into generation prompts (only if Use seed is ON).
+        strict=False: loose vibe (do not quote).
+        strict=True: honor direction more closely (still no forced word-for-word).
+        """
+        seed = self._ai_seed_text()
+        if not seed:
+            return ""
+        if strict:
+            return (
+                f"PLAYER SEED / DIRECTION (honor intent; do not paste verbatim): {seed}\n"
+            )
+        return (
+            f"PLAYER SEED (loose vibe only — do NOT quote or list these words): {seed}\n"
+        )
 
     # ------------------------------------------------------------------
     # Per-game configuration (Steam + non-Steam)
@@ -2674,21 +2770,33 @@ class GamersChatHelper:
         self.main_body = ctk.CTkFrame(self.root, fg_color="transparent")
         self.main_body.pack(fill="both", expand=True, padx=pad(14), pady=(pad(6), 0))
 
+        # Top-level app tabs — dark rail + elevated selected (not purple chips like INTENT)
         self.tabview = ctk.CTkTabview(
             self.main_body,
             fg_color=C["surface"],
-            segmented_button_fg_color=C["elevated"],
-            segmented_button_selected_color=C["accent"],
-            segmented_button_selected_hover_color=C["accent_h"],
-            segmented_button_unselected_color=C["elevated"],
-            segmented_button_unselected_hover_color=C["hover"],
+            segmented_button_fg_color=C["bg"],
+            segmented_button_selected_color=C["elevated"],
+            segmented_button_selected_hover_color=C["hover"],
+            segmented_button_unselected_color=C["bg"],
+            segmented_button_unselected_hover_color=C["elevated"],
             text_color=C["text"],
             corner_radius=14,
-            border_width=0,
+            border_width=1,
+            border_color=C["line"],
         )
         self.tabview.pack(fill="both", expand=True)
         try:
-            self.tabview._segmented_button.configure(font=f_ui(12, "bold"), height=sz(32))
+            # Taller + bold: primary navigation (distinct from LFG/Recruit intent row)
+            self.tabview._segmented_button.configure(
+                font=f_ui(13, "bold"),
+                height=sz(38),
+                selected_color=C["elevated"],
+                selected_hover_color=C["hover"],
+                unselected_color=C["bg"],
+                unselected_hover_color=C["elevated"],
+                text_color=C["text"],
+                text_color_disabled=C["muted"],
+            )
         except Exception:
             pass
 
@@ -3170,7 +3278,7 @@ class GamersChatHelper:
             fg_color=C["success_dim"], corner_radius=8, padx=pad(8), pady=pad(3),
         )
         self.limit_badge.pack(side="left", padx=pad(6))
-        tip(self.limit_badge, "Hard character limit. Copy blocks if Generated line is over.")
+        tip(self.limit_badge, "Hard character limit. Copy blocks if Your Line is over.")
 
         # Status chips (AI + ready) — still daily-path critical
         self.llm_dot = ctk.CTkLabel(
@@ -3192,11 +3300,13 @@ class GamersChatHelper:
             "AI · on = server reachable for Write / OCR / Economy.",
         )
 
+        # Ready/copy status lives in the footer session chip (UX: one metrics pole)
+        self._ready_status = "ready"
+        self._ready_status_color = C["muted"]
         self.copy_badge = ctk.CTkLabel(
             row1, text="ready", font=f_ui(11), text_color=C["muted"],
         )
-        self.copy_badge.pack(side="left", padx=(0, pad(4)))
-        tip(self.copy_badge, "ready · thinking · copied · offline · over limit")
+        self.copy_badge.pack_forget()  # kept for API compat; not shown in header
 
         # Steam on a quiet second chip row (optional glance, not tools clutter)
         row2 = ctk.CTkFrame(self.header, fg_color="transparent")
@@ -3205,7 +3315,7 @@ class GamersChatHelper:
             row2,
             text="Players · …",
             font=f_ui(12, "bold"),
-            text_color=C["faint"],
+            text_color=C["muted"],
             cursor="hand2",
             fg_color=C["elevated"],
             corner_radius=8,
@@ -3221,14 +3331,27 @@ class GamersChatHelper:
         )
         self.type_scale_label = ctk.CTkLabel(
             row2, text=TYPE_PRESETS[self.font_scale_key]["label"],
-            font=f_ui(11), text_color=C["faint"],
+            font=f_ui(11), text_color=C["muted"],
         )
         # Hidden label kept for type-scale code that updates it; shown in overflow menu
         self.type_scale_label.pack_forget()
-        ctk.CTkLabel(
-            row2, text="  ·  F6 Write · F7 Copy · hover for tips",
-            font=f_ui(10), text_color=C["faint"],
-        ).pack(side="left", padx=(pad(8), 0))
+
+        # Hotkey badges — prominent, not faint micro-text (critique: amplify F6/F7)
+        hk = ctk.CTkFrame(row2, fg_color="transparent")
+        hk.pack(side="left", padx=(pad(10), 0))
+        for key_label, desc in (("F6", "Write"), ("F7", "Copy")):
+            pill = ctk.CTkLabel(
+                hk,
+                text=f"{key_label} {desc}",
+                font=f_ui(11, "bold"),
+                text_color=C["text"],
+                fg_color=C["elevated"],
+                corner_radius=8,
+                padx=pad(8),
+                pady=pad(4),
+            )
+            pill.pack(side="left", padx=(0, pad(6)))
+        tip(hk, "Global hotkeys when Keys is on (⋯ menu).\nF6 = Write current intent · F7 = Copy Your Line.")
 
     def _open_header_overflow(self):
         """Native menu for power controls — keeps the daily header calm."""
@@ -3297,38 +3420,45 @@ class GamersChatHelper:
                 pass
 
     def build_footer(self):
-        foot = ctk.CTkFrame(self.root, fg_color="transparent", height=sz(36))
+        foot = ctk.CTkFrame(self.root, fg_color="transparent", height=sz(40))
         foot.pack(fill="x", padx=pad(16), pady=(pad(6), pad(10)))
 
         self.status_bar = ctk.CTkLabel(
-            foot, text=random.choice(TIPS), font=f_ui(11),
-            text_color=C["faint"], anchor="w",
+            foot, text=random.choice(TIPS), font=f_ui(12),
+            text_color=C["muted"], anchor="w",
         )
         self.status_bar.pack(side="left", fill="x", expand=True)
 
         help_foot = ctk.CTkButton(
-            foot, text="F1 Help", width=sz(72), height=sz(28), font=f_ui(11, "bold"),
+            foot, text="F1 Help", width=sz(80), height=sz(32), font=f_ui(12, "bold"),
             fg_color=C["elevated"], hover_color=C["hover"],
             command=self.open_context_help,
         )
         help_foot.pack(side="right", padx=(pad(6), pad(6)))
         tip(help_foot, "Context help for the current tab (F1). Full manual: Help menu or ? Help.")
 
+        # Single metrics pole: ready status + session counts (was split header/footer)
         self.session_chip = ctk.CTkLabel(
-            foot, text="session  ·  0 copies", font=f_ui(11, "bold"),
-            text_color=C["muted"], fg_color=C["elevated"], corner_radius=8,
-            padx=pad(10), pady=pad(4),
+            foot, text="ready  ·  0 copies  ·  0 gens", font=f_ui(12, "bold"),
+            text_color=C["text"], fg_color=C["elevated"], corner_radius=8,
+            padx=pad(12), pady=pad(6),
         )
         self.session_chip.pack(side="right")
-        tip(self.session_chip, "This session only: copies, AI generations, streak. Resets when you close the app.")
+        tip(
+            self.session_chip,
+            "Status + this session: copies, AI gens, streak.\n"
+            "ready · thinking · copied · offline · blocked\n"
+            "Resets when you close the app.",
+        )
+        self.ready_status_label = self.session_chip
 
     def _attach_main_tooltips(self):
         """Hover help for main configurable controls (safe if widgets missing)."""
         pairs = [
             (getattr(self, "sticky_copy_btn", None),
-             "Copy the Generated line to the clipboard.\nBlocked if over this game’s character limit."),
+             "Copy Your Line to the clipboard.\nBlocked if over this game’s character limit."),
             (getattr(self, "editor_copy_btn", None),
-             "Copy the Generated line (same as the green sticky Copy bar at the bottom)."),
+             "Copy Your Line (same as green Copy · F7)."),
             (getattr(self, "intent_seg", None),
              "What you want to say: LFG · Activity · Reply · Recruit · Noise.\n"
              "Only that intent’s panel shows below."),
@@ -3448,16 +3578,16 @@ class GamersChatHelper:
         accent = accent or C["accent"]
         head = ctk.CTkFrame(parent, fg_color="transparent")
         head.pack(fill="x", padx=pad(14), pady=(pad(12), pad(4)))
-        bar = ctk.CTkFrame(head, fg_color=accent, width=sz(4), height=sz(28), corner_radius=2)
+        bar = ctk.CTkFrame(head, fg_color=accent, width=sz(4), height=sz(32), corner_radius=2)
         bar.pack(side="left", padx=(0, pad(10)))
         bar.pack_propagate(False)
         texts = ctk.CTkFrame(head, fg_color="transparent")
         texts.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(
-            texts, text=title, font=f_ui(12, "bold"), text_color=C["text"], anchor="w",
+            texts, text=title, font=f_ui(13, "bold"), text_color=C["text"], anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
-            texts, text=subtitle, font=f_ui(11), text_color=C["muted"], anchor="w",
+            texts, text=subtitle, font=f_ui(12), text_color=C["muted"], anchor="w",
         ).pack(anchor="w")
 
 
@@ -3500,8 +3630,8 @@ class GamersChatHelper:
         steps.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         for line in (
             "1  Pick what you want: LFG · Activity · Reply · Recruit · Noise",
-            "2  Hit Write — your line appears below",
-            "3  Green Copy (always at the bottom) → paste in game",
+            "2  Hit Write — Your Line updates below",
+            "3  Green Copy · F7 → paste in game",
         ):
             ctk.CTkLabel(
                 steps, text=line, font=f_ui(13), text_color=C["text"], anchor="w",
@@ -3512,28 +3642,101 @@ class GamersChatHelper:
             command=self.dismiss_onboarding,
         ).pack(fill="x", padx=pad(14), pady=(pad(4), pad(12)))
 
-        # ---- Intent chips ----
-        intent_card = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+        # ---- Intent chips (job picker — visually distinct from top app tabs) ----
+        intent_card = ctk.CTkFrame(
+            tab, fg_color=C["elevated"], corner_radius=12,
+            border_width=1, border_color=C["accent"],
+        )
         intent_card.pack(fill="x", padx=pad(10), pady=(pad(10) if self.onboarding_done else 0, pad(6)))
+        intent_head = ctk.CTkFrame(intent_card, fg_color="transparent")
+        intent_head.pack(fill="x", padx=pad(14), pady=(pad(10), pad(4)))
         ctk.CTkLabel(
-            intent_card, text="WHAT DO YOU WANT TO SAY?", font=f_ui(10, "bold"),
-            text_color=C["faint"],
-        ).pack(anchor="w", padx=pad(14), pady=(pad(10), pad(4)))
+            intent_head, text="INTENT", font=f_ui(11, "bold"),
+            text_color=C["accent"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            intent_head, text="what do you want to say?", font=f_ui(12),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(pad(8), 0))
         chip_row = ctk.CTkFrame(intent_card, fg_color="transparent")
         chip_row.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
+        # Filled accent chips on elevated card — not the same style as top tab rail
         self.intent_seg = ctk.CTkSegmentedButton(
             chip_row,
             values=[INTENT_LABELS[k] for k in INTENT_OPTIONS],
             font=f_ui(13, "bold"),
-            height=sz(36),
+            height=sz(38),
             selected_color=C["accent"],
             selected_hover_color=C["accent_h"],
             unselected_color=C["surface"],
             unselected_hover_color=C["hover"],
+            text_color=C["text"],
             command=self.on_intent_label,
         )
         self.intent_seg.set(INTENT_LABELS.get(self.generator_intent.get(), "LFG"))
         self.intent_seg.pack(fill="x")
+
+        # Shared AI seed — compact when off (UX: cut daily-path clutter)
+        seed_card = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+        seed_card.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
+        self.ai_seed_card = seed_card
+        seed_head = ctk.CTkFrame(seed_card, fg_color="transparent")
+        seed_head.pack(fill="x", padx=pad(14), pady=(pad(8), pad(6)))
+        ctk.CTkLabel(
+            seed_head, text="AI SEED", font=f_ui(11, "bold"), text_color=C["muted"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            seed_head, text="optional direction for Write",
+            font=f_ui(12), text_color=C["muted"],
+        ).pack(side="left", padx=(pad(8), 0))
+        self.ai_seed_enabled_cb = ctk.CTkCheckBox(
+            seed_head,
+            text="Use seed",
+            variable=self.ai_seed_enabled,
+            font=f_ui(12, "bold"),
+            text_color=C["text"],
+            fg_color=C["accent"],
+            hover_color=C["accent_h"],
+            border_color=C["line"],
+            command=self._on_ai_seed_enabled_changed,
+            checkbox_width=sz(18),
+            checkbox_height=sz(18),
+        )
+        self.ai_seed_enabled_cb.pack(side="right")
+        tip(
+            self.ai_seed_enabled_cb,
+            "When ON, the seed text is passed into chat AI (LFG / Activity / Reply / Recruit).\n"
+            "When OFF, the field hides and is ignored.",
+        )
+        self.ai_seed_row = ctk.CTkFrame(seed_card, fg_color="transparent")
+        self.ai_seed_entry = ctk.CTkEntry(
+            self.ai_seed_row,
+            textvariable=self.ai_seed_var,
+            height=sz(34),
+            font=f_ui(13),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+            placeholder_text=(
+                "Optional vibe for AI: chill · mention no Discord · shorter · "
+                "include buffs · sound casual…"
+            ),
+        )
+        self.ai_seed_entry.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        self.ai_seed_entry.bind("<FocusOut>", lambda e: self.save_settings())
+        self.ai_seed_entry.bind("<Return>", lambda e: self.save_settings())
+        tip(
+            self.ai_seed_entry,
+            "Shared AI seed for LFG, Activity, Reply (clap-back), and Recruit.\n"
+            "Loose direction only — not copied word-for-word into the line.\n"
+            "Must turn ON “Use seed” for this to apply.",
+        )
+        ctk.CTkButton(
+            self.ai_seed_row, text="Clear", width=sz(64), height=sz(34), font=f_ui(12),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            command=self.clear_ai_seed,
+        ).pack(side="right")
+        self._sync_ai_seed_entry_state()
 
         self.intent_host = ctk.CTkFrame(tab, fg_color="transparent")
         self.intent_host.pack(fill="x", padx=pad(10), pady=(0, pad(4)))
@@ -3625,7 +3828,7 @@ class GamersChatHelper:
             "instead of a bigger block of chat history.",
         )
 
-        # ---- Generated editor + Copy right next to it (not buried at window bottom) ----
+        # ---- Single editing canvas: line to paste (all intents, including Recruit) ----
         editor_card = ctk.CTkFrame(
             tab, fg_color=C["elevated"], corner_radius=12,
             border_width=1, border_color=C["success"],
@@ -3634,18 +3837,24 @@ class GamersChatHelper:
         ed_head = ctk.CTkFrame(editor_card, fg_color="transparent")
         ed_head.pack(fill="x", padx=pad(14), pady=(pad(10), pad(4)))
         ctk.CTkLabel(
-            ed_head, text="GENERATED LINE",
-            font=f_ui(11, "bold"), text_color=C["faint"],
+            ed_head, text="YOUR LINE",
+            font=f_ui(11, "bold"), text_color=C["text"],
         ).pack(side="left")
+        ctk.CTkLabel(
+            ed_head, text="edit · Copy · paste in game",
+            font=f_ui(11), text_color=C["muted"],
+        ).pack(side="left", padx=(pad(8), 0))
         self.editor_len = ctk.CTkLabel(
             ed_head, text="0 / 150", font=f_ui(12, "bold"), text_color=C["success"],
         )
         self.editor_len.pack(side="right")
         # Mirror for sticky bar meter if present
         self.quick_len = self.editor_len
+        # Recruit still updates this when loading older paths
+        self.counter_label = self.editor_len
 
         ed_body = ctk.CTkFrame(editor_card, fg_color="transparent")
-        ed_body.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
+        ed_body.pack(fill="x", padx=pad(12), pady=(0, pad(4)))
         self.gen_editor = ctk.CTkTextbox(
             ed_body, height=sz(96), font=f_mono(14),
             fg_color=C["surface"], text_color=C["text"],
@@ -3653,27 +3862,50 @@ class GamersChatHelper:
         )
         self.gen_editor.pack(side="left", fill="both", expand=True, padx=(0, pad(8)))
         self.gen_editor.insert("1.0", "")
-        self.gen_editor.bind("<KeyRelease>", lambda e: self._update_quick_out_meter())
+        self.gen_editor.bind(
+            "<KeyRelease>",
+            lambda e: (self._update_quick_out_meter(), self._recruit_check_dirty_from_editor()),
+        )
         self.quick_out = self.gen_editor
         self.ai_output = self.gen_editor
+        # Recruit pitch = this same canvas (no second text box)
+        self.msg_textbox = self.gen_editor
 
         ed_side = ctk.CTkFrame(ed_body, fg_color="transparent", width=sz(128))
         ed_side.pack(side="right", fill="y")
         ed_side.pack_propagate(False)
         self.editor_copy_btn = ctk.CTkButton(
-            ed_side, text="Copy", height=sz(56), font=f_ui(16, "bold"),
+            ed_side, text="Copy  ·  F7", height=sz(56), font=f_ui(15, "bold"),
             fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
             command=self.copy_quick_out,
         )
         self.editor_copy_btn.pack(fill="x", pady=(0, pad(6)))
-        tip(self.editor_copy_btn, "Copy Generated line · F7")
+        tip(self.editor_copy_btn, "Copy this line to the clipboard · F7")
         # sticky_copy_btn aliases to this so flash/tooltips keep working
         self.sticky_copy_btn = self.editor_copy_btn
         ctk.CTkButton(
-            ed_side, text="★ Fav", height=sz(32), font=f_ui(12),
+            ed_side, text="★ Fav", height=sz(36), font=f_ui(12),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.favorite_quick_out,
         ).pack(fill="x")
+
+        # Length vs limit meter (was unlabeled orange bar under Recruit pitch)
+        lim_row = ctk.CTkFrame(editor_card, fg_color="transparent")
+        lim_row.pack(fill="x", padx=pad(12), pady=(0, pad(4)))
+        self.limit_meter_label = ctk.CTkLabel(
+            lim_row, text="Length vs limit", font=f_ui(11), text_color=C["muted"], anchor="w",
+        )
+        self.limit_meter_label.pack(side="left")
+        self.safety_progressbar = ctk.CTkProgressBar(
+            editor_card, progress_color=C["success"], fg_color=C["surface"], height=sz(8),
+        )
+        self.safety_progressbar.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
+        self.safety_progressbar.set(0)
+        tip(
+            self.safety_progressbar,
+            "How full your line is vs this game’s character limit.\n"
+            "Green = safe · Amber near limit · Red = over (Copy blocked).",
+        )
 
         refine = ctk.CTkFrame(editor_card, fg_color="transparent")
         refine.pack(fill="x", padx=pad(12), pady=(0, pad(4)))
@@ -3684,23 +3916,25 @@ class GamersChatHelper:
             ("Clear", self.clear_gen_editor),
         ):
             ctk.CTkButton(
-                refine, text=label, width=sz(72), height=sz(30), font=f_ui(12),
+                refine, text=label, width=sz(76), height=sz(32), font=f_ui(12),
                 fg_color=C["surface"], hover_color=C["hover"], text_color=C["text"],
                 border_width=1, border_color=C["line"], command=cmd,
             ).pack(side="left", padx=(0, pad(4)))
         ctk.CTkButton(
-            refine, text="Safer", width=sz(64), height=sz(30), font=f_ui(11),
+            refine, text="Safer", width=sz(68), height=sz(32), font=f_ui(12),
             fg_color="transparent", hover_color=C["hover"], text_color=C["muted"],
             command=self.refine_safer,
         ).pack(side="left", padx=(pad(4), 0))
         ctk.CTkButton(
-            refine, text="Spicier", width=sz(64), height=sz(30), font=f_ui(11),
+            refine, text="Spicier", width=sz(68), height=sz(32), font=f_ui(12),
             fg_color="transparent", hover_color=C["hover"], text_color=C["muted"],
             command=self.refine_spicier,
         ).pack(side="left")
 
+        # Option slots only appear when multi-variant results exist (Tier 3)
         self.variant_frame = ctk.CTkFrame(editor_card, fg_color="transparent")
         self.variant_frame.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
+        self.variant_frame.pack_forget()  # hidden until 2+ options
         self.variant_btns: list[ctk.CTkButton] = []
         for i in range(3):
             b = ctk.CTkButton(
@@ -3708,7 +3942,7 @@ class GamersChatHelper:
                 font=f_ui(11), fg_color=C["surface"], hover_color=C["hover"],
                 command=lambda idx=i: self.pick_variant(idx),
             )
-            b.pack(fill="x", pady=1)
+            # packed by _set_variant_buttons when active
             self.variant_btns.append(b)
 
         self.quick_scroll = ctk.CTkScrollableFrame(
@@ -3723,6 +3957,8 @@ class GamersChatHelper:
 
         self._apply_advanced_visibility()
         self._show_intent_panel(self.generator_intent.get())
+        # msg_textbox aliases gen_editor — now safe to load recruit pitch into Your Line
+        self._refresh_recruit_ui(load_editor=True)
         self._update_quick_out_meter()
 
     def _advanced_toggle_label(self) -> str:
@@ -3761,6 +3997,11 @@ class GamersChatHelper:
     def set_intent(self, key: str):
         if key not in INTENT_OPTIONS:
             key = "lfg"
+        prev = ""
+        try:
+            prev = (self.generator_intent.get() or "").strip()
+        except Exception:
+            pass
         self.generator_intent.set(key)
         if hasattr(self, "intent_seg"):
             try:
@@ -3768,6 +4009,13 @@ class GamersChatHelper:
             except Exception:
                 pass
         self._show_intent_panel(key)
+        # Entering Recruit: load selected pitch only if Your Line is empty
+        # (don't wipe an unsaved AI draft when switching intents)
+        if key == "recruit" and prev != "recruit":
+            if not self.get_gen_text():
+                self._refresh_recruit_ui(load_editor=True)
+            else:
+                self._update_recruit_crud_status()
         self.save_settings()
 
     def _show_intent_panel(self, key: str):
@@ -3826,7 +4074,7 @@ class GamersChatHelper:
 
         self.write_lfg_btn = self._pack_primary_cta(
             parent, "Write LFG  ·  F6", self.generate_lfg,
-            tip_text="Primary action — Content + Location → Generated line → Copy below.",
+            tip_text="Primary action — Content + Location → Your Line → Copy.",
         )
 
         def _lfg_more(fr):
@@ -3872,7 +4120,7 @@ class GamersChatHelper:
         self._pack_primary_cta(
             parent, "Write activity  ·  F6", self.generate_activity_line,
             color=C["info"], hover="#0ea5e9", text_color="#041018",
-            tip_text="Casual presence line → Generated line → Copy below.",
+            tip_text="Casual presence line → Your Line → Copy.",
         )
 
     def _build_reply_panel(self, parent):
@@ -3900,7 +4148,7 @@ class GamersChatHelper:
         self._pack_primary_cta(
             parent, "Write reply  ·  F6", self.generate_response_from_quick,
             color=C["purple"], hover=C["purple_h"],
-            tip_text="Understated reply from “They said” → Generated line → Copy.",
+            tip_text="Understated reply from “They said” → Your Line → Copy.",
         )
 
         # Secondary: grab path (common but secondary to write-when-pasted)
@@ -3941,15 +4189,9 @@ class GamersChatHelper:
     def _build_recruit_panel(self, parent):
         self._job_card_header(
             parent, "RECRUIT",
-            "Manage pitches (CRUD) · AI rewrite does not auto-save.",
+            "Load or type in Your Line below · Save to keep · AI does not auto-save.",
             accent=C["line"],
         )
-
-        # ---- CRUD: always visible, labeled ----
-        ctk.CTkLabel(
-            parent, text="SAVED PITCHES  ·  CREATE · READ · UPDATE · DELETE",
-            font=f_ui(10, "bold"), text_color=C["faint"],
-        ).pack(anchor="w", padx=pad(14), pady=(0, pad(2)))
 
         pick_row = ctk.CTkFrame(parent, fg_color="transparent")
         pick_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
@@ -3965,9 +4207,9 @@ class GamersChatHelper:
             button_color=C["hover"],
         )
         self.template_combo.pack(side="left", fill="x", expand=True, padx=(pad(8), pad(8)))
-        tip(self.template_combo, "READ — load a saved pitch into the seed editor.")
+        tip(self.template_combo, "Load a saved pitch into Your Line below.")
         self.recruit_crud_status = ctk.CTkLabel(
-            pick_row, text="", font=f_ui(11), text_color=C["faint"], anchor="e",
+            pick_row, text="", font=f_ui(11), text_color=C["muted"], anchor="e",
         )
         self.recruit_crud_status.pack(side="right")
 
@@ -3980,7 +4222,7 @@ class GamersChatHelper:
         self.recruit_name_entry = ctk.CTkEntry(
             name_row,
             textvariable=self.recruit_name_var,
-            placeholder_text="Pitch name (used on Save / Save as new)",
+            placeholder_text="Pitch name (for Save)",
             height=sz(30),
             font=f_ui(12),
             fg_color=C["surface"],
@@ -3989,83 +4231,42 @@ class GamersChatHelper:
         )
         self.recruit_name_entry.pack(side="left", fill="x", expand=True, padx=(pad(6), 0))
 
+        # Primary actions only; secondary CRUD lives in ••• overflow (UX critique Tier 1)
         crud = ctk.CTkFrame(parent, fg_color=C["surface"], corner_radius=10)
         crud.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         crud_inner = ctk.CTkFrame(crud, fg_color="transparent")
         crud_inner.pack(fill="x", padx=pad(8), pady=pad(8))
-        # Row of clear CRUD actions
-        for label, cmd, fg, hover, tc, help_txt in (
-            ("+ New", self.recruit_new, C["elevated"], C["hover"], C["text"],
-             "CREATE — blank draft (not saved until you Save)."),
-            ("Save", self.recruit_save, C["accent"], C["accent_h"], C["text"],
-             "UPDATE — overwrite the loaded pitch (or create if new draft)."),
-            ("Save as new", self.recruit_save_as_new, C["elevated"], C["hover"], C["text"],
-             "CREATE — always add a new pitch; keeps the original."),
-            ("Duplicate", self.recruit_duplicate, C["elevated"], C["hover"], C["text"],
-             "CREATE — copy current text as another saved pitch."),
-            ("Delete", self.recruit_delete, C["danger_dim"], "#7f1d1d", C["danger"],
-             "DELETE — remove the loaded pitch from the list."),
-        ):
-            b = ctk.CTkButton(
-                crud_inner, text=label, height=sz(32), font=f_ui(12, "bold" if label == "Save" else "normal"),
-                fg_color=fg, hover_color=hover, text_color=tc,
-                border_width=0 if label == "Save" else 1, border_color=C["line"],
-                command=cmd,
-            )
-            b.pack(side="left", padx=(0, pad(4)), fill="x" if label == "Save" else None, expand=(label == "Save"))
-            tip(b, help_txt)
+        new_btn = ctk.CTkButton(
+            crud_inner, text="+ New", height=sz(36), width=sz(88), font=f_ui(12, "bold"),
+            fg_color=C["elevated"], hover_color=C["hover"], text_color=C["text"],
+            border_width=1, border_color=C["line"],
+            command=self.recruit_new,
+        )
+        new_btn.pack(side="left", padx=(0, pad(6)))
+        tip(new_btn, "Blank draft in Your Line (not saved until you Save).")
+        self.recruit_save_btn = ctk.CTkButton(
+            crud_inner, text="Save", height=sz(36), font=f_ui(13, "bold"),
+            fg_color=C["accent"], hover_color=C["accent_h"], text_color=C["text"],
+            command=self.recruit_save,
+        )
+        self.recruit_save_btn.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        tip(self.recruit_save_btn, "Save Your Line as this pitch (or create if new draft).")
+        more_btn = ctk.CTkButton(
+            crud_inner, text="•••", height=sz(36), width=sz(44), font=f_ui(14, "bold"),
+            fg_color=C["elevated"], hover_color=C["hover"], text_color=C["text"],
+            border_width=1, border_color=C["line"],
+            command=self._open_recruit_overflow_menu,
+        )
+        more_btn.pack(side="left")
+        tip(more_btn, "Save as new · Duplicate · Delete · Open file")
+        self.recruit_more_btn = more_btn
 
-        msg_head = ctk.CTkFrame(parent, fg_color="transparent")
-        msg_head.pack(fill="x", padx=pad(14), pady=(0, 2))
-        ctk.CTkLabel(msg_head, text="Pitch text", font=f_ui(11), text_color=C["muted"]).pack(side="left")
-        self.counter_label = ctk.CTkLabel(
-            msg_head, text="0 / 150", font=f_ui(12, "bold"), text_color=C["success"],
-        )
-        self.counter_label.pack(side="right")
-
-        msg_row = ctk.CTkFrame(parent, fg_color="transparent")
-        msg_row.pack(fill="x", padx=pad(14), pady=(2, pad(4)))
-        self.msg_textbox = ctk.CTkTextbox(
-            msg_row, height=sz(88), font=f_mono(13),
-            fg_color=C["surface"], text_color=C["text"], border_width=0, corner_radius=10,
-        )
-        self.msg_textbox.pack(side="left", fill="both", expand=True, padx=(0, pad(8)))
-        self.msg_textbox.bind("<KeyRelease>", self.update_counter)
-        tip(
-            self.msg_textbox,
-            "Your recruiting pitch — load, edit, or type here.\n"
-            "Copy sends this text to the clipboard (no AI required).\n"
-            "AI variant is optional and does not auto-save.",
-        )
-        pitch_side = ctk.CTkFrame(msg_row, fg_color="transparent", width=sz(120))
-        pitch_side.pack(side="right", fill="y")
-        pitch_side.pack_propagate(False)
-        self.recruit_copy_btn = ctk.CTkButton(
-            pitch_side, text="Copy", height=sz(52), font=f_ui(15, "bold"),
-            fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
-            command=self.copy_recruitment,
-        )
-        self.recruit_copy_btn.pack(fill="x", pady=(0, pad(6)))
-        tip(
-            self.recruit_copy_btn,
-            "Copy this pitch to the clipboard as-is.\n"
-            "No AI · no variant · paste straight into game chat.",
-        )
-        ctk.CTkButton(
-            pitch_side, text="→ Line", height=sz(32), font=f_ui(11),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.recruit_to_editor,
-        ).pack(fill="x")
-        tip(
-            pitch_side.winfo_children()[-1],
-            "Push this pitch into Generated line (still no AI).\n"
-            "Useful if you want to refine/trim there first.",
-        )
-
-        self.safety_progressbar = ctk.CTkProgressBar(
-            parent, progress_color=C["success"], fg_color=C["surface"], height=sz(6),
-        )
-        self.safety_progressbar.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+        # Hint: single canvas lives below (no second pitch box)
+        ctk.CTkLabel(
+            parent,
+            text="Edit the pitch in Your Line below  ·  one Copy  ·  F7",
+            font=f_ui(12), text_color=C["muted"], anchor="w",
+        ).pack(fill="x", padx=pad(14), pady=(0, pad(4)))
 
         seed_row = ctk.CTkFrame(parent, fg_color="transparent")
         seed_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
@@ -4082,12 +4283,12 @@ class GamersChatHelper:
         )
         self.recruit_variant_seed_entry.pack(fill="x")
 
-        # Primary AI — NO auto-save
+        # Primary AI — rewrites Your Line in place; does NOT auto-save
         self._pack_primary_cta(
             parent,
             "AI variant  ·  F6",
             lambda: self.generate_recruit_variant(n=1, save_as_new=False),
-            tip_text="Rewrite into Generated line only. Use Save / Save as new when you like it.",
+            tip_text="Rewrites Your Line in place. Press Save when you want to keep it.",
         )
         self.recruit_copy_btn = None
 
@@ -4111,8 +4312,34 @@ class GamersChatHelper:
             ).pack(side="left")
 
         self._pack_more_block(parent, "recruit", _recruit_more)
-        self._refresh_recruit_ui(load_editor=True)
-        self.update_counter()
+        # Editor (Your Line) is built after this panel — load pitch once gen_editor exists
+        self._refresh_recruit_ui(load_editor=False)
+
+    def _open_recruit_overflow_menu(self):
+        """Secondary recruit actions — keeps primary row to Save + New only."""
+        menu = tk.Menu(self.root, tearoff=0, bg=C["elevated"], fg=C["text"],
+                       activebackground=C["hover"], activeforeground=C["text"],
+                       bd=0, font=(FONT_UI, 11))
+        menu.add_command(label="Save as new", command=self.recruit_save_as_new)
+        menu.add_command(label="Duplicate", command=self.recruit_duplicate)
+        menu.add_separator()
+        menu.add_command(label="Delete…", command=self.recruit_delete)
+        menu.add_separator()
+        menu.add_command(label="Open file", command=self.recruit_open_file)
+        try:
+            btn = getattr(self, "recruit_more_btn", None)
+            if btn is not None:
+                x = btn.winfo_rootx()
+                y = btn.winfo_rooty() + btn.winfo_height()
+            else:
+                x = self.root.winfo_pointerx()
+                y = self.root.winfo_pointery()
+            menu.tk_popup(x, y)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
 
     def _build_noise_panel(self, parent):
         self._job_card_header(
@@ -4151,7 +4378,7 @@ class GamersChatHelper:
         self._pack_primary_cta(
             parent, "Write chaos  ·  F6", self.generate_noise,
             color=C["surface"], hover=C["hover"],
-            tip_text="Non-game noise at the slider level → Generated line → Copy.",
+            tip_text="Non-game noise at the slider level → Your Line → Copy.",
         )
         # Dad joke as clear second primary (not buried)
         dad = ctk.CTkButton(
@@ -4207,7 +4434,7 @@ class GamersChatHelper:
         toggle = ctk.CTkButton(
             wrap,
             text="▸ More tools",
-            height=sz(28),
+            height=sz(32),
             font=f_ui(12),
             fg_color="transparent",
             hover_color=C["hover"],
@@ -4348,56 +4575,247 @@ class GamersChatHelper:
     def build_library_tab(self):
         tab = self.tabview.tab("Library")
         tab.configure(fg_color=C["surface"])
+
         head = ctk.CTkFrame(tab, fg_color="transparent")
-        head.pack(fill="x", padx=12, pady=(12, 4))
+        head.pack(fill="x", padx=pad(12), pady=(pad(12), pad(4)))
         ctk.CTkLabel(
-            head, text="Click to re-copy  ·  star to pin  ·  delete to forget",
-            font=f_ui(12), text_color=C["muted"],
+            head, text="LIBRARY", font=f_ui(13, "bold"), text_color=C["text"],
         ).pack(side="left")
-        ctk.CTkButton(
-            head, text="Clear history", width=110, height=sz(30), font=f_ui(11),
+        ctk.CTkLabel(
+            head, text="click line = copy  ·  ☐ = multi-select  ·  ★ = pin",
+            font=f_ui(12), text_color=C["muted"],
+        ).pack(side="left", padx=(pad(10), 0))
+
+        # Selection / batch actions (primary for multi-delete workflow)
+        tools = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+        tools.pack(fill="x", padx=pad(12), pady=(pad(4), pad(6)))
+        tools_inner = ctk.CTkFrame(tools, fg_color="transparent")
+        tools_inner.pack(fill="x", padx=pad(10), pady=pad(8))
+
+        self.library_select_all_btn = ctk.CTkButton(
+            tools_inner, text="Select all", width=sz(100), height=sz(34), font=f_ui(12, "bold"),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.clear_history,
-        ).pack(side="right")
+            command=self.library_select_all,
+        )
+        self.library_select_all_btn.pack(side="left", padx=(0, pad(6)))
+        tip(self.library_select_all_btn, "Select every history line for batch actions.")
+
+        self.library_clear_sel_btn = ctk.CTkButton(
+            tools_inner, text="Clear selection", width=sz(120), height=sz(34), font=f_ui(12),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            command=self.library_clear_selection,
+        )
+        self.library_clear_sel_btn.pack(side="left", padx=(0, pad(6)))
+        tip(self.library_clear_sel_btn, "Uncheck all selected lines.")
+
+        self.library_delete_sel_btn = ctk.CTkButton(
+            tools_inner, text="Delete selected", width=sz(140), height=sz(34), font=f_ui(12, "bold"),
+            fg_color=C["danger_dim"], hover_color="#7f1d1d", text_color=C["danger"],
+            command=self.library_delete_selected,
+        )
+        self.library_delete_sel_btn.pack(side="left", padx=(0, pad(10)))
+        tip(self.library_delete_sel_btn, "Remove all checked lines at once (one confirmation).")
+
+        self.library_sel_label = ctk.CTkLabel(
+            tools_inner, text="0 selected", font=f_ui(12, "bold"), text_color=C["muted"],
+        )
+        self.library_sel_label.pack(side="left", padx=(0, pad(8)))
+
         ctk.CTkButton(
-            head, text="Manage stock", width=110, height=sz(30), font=f_ui(11),
+            tools_inner, text="Manage stock", width=sz(110), height=sz(34), font=f_ui(12),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.clear_your_lines_menu,
+        ).pack(side="right")
+        ctk.CTkButton(
+            tools_inner, text="Clear history", width=sz(110), height=sz(34), font=f_ui(12),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            command=self.clear_history,
         ).pack(side="right", padx=(0, pad(6)))
+
         self.history_scroll = ctk.CTkScrollableFrame(
-            tab, fg_color=C["elevated"], corner_radius=12, label_text="History",
+            tab, fg_color=C["elevated"], corner_radius=12, label_text="Lines",
             label_font=f_ui(12, "bold"), label_text_color=C["muted"],
         )
-        self.history_scroll.pack(fill="both", expand=True, padx=12, pady=(4, 12))
+        self.history_scroll.pack(fill="both", expand=True, padx=pad(12), pady=(0, pad(12)))
+        self._update_library_selection_ui()
+
+    def _library_visible_lines(self) -> list[str]:
+        """Unique library lines: favorites first (if not in history), then history (newest first)."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for f in self.favorites or []:
+            t = (f or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+        for h in reversed(self.history or []):
+            t = (h or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
+
+    def _update_library_selection_ui(self):
+        """Refresh select count + Delete selected affordance."""
+        # Drop selections that no longer exist
+        valid = set(self._library_visible_lines())
+        self._library_selected = {t for t in getattr(self, "_library_selected", set()) if t in valid}
+        n = len(self._library_selected)
+        if hasattr(self, "library_sel_label"):
+            try:
+                self.library_sel_label.configure(
+                    text=f"{n} selected",
+                    text_color=C["warn"] if n else C["muted"],
+                )
+            except Exception:
+                pass
+        if hasattr(self, "library_delete_sel_btn"):
+            try:
+                if n:
+                    self.library_delete_sel_btn.configure(
+                        text=f"Delete selected ({n})",
+                        state="normal",
+                        fg_color=C["danger_dim"],
+                        text_color=C["danger"],
+                    )
+                else:
+                    self.library_delete_sel_btn.configure(
+                        text="Delete selected",
+                        state="disabled",
+                        fg_color=C["surface"],
+                        text_color=C["muted"],
+                    )
+            except Exception:
+                pass
+
+    def library_toggle_select(self, text: str):
+        text = (text or "").strip()
+        if not text:
+            return
+        sel = getattr(self, "_library_selected", None)
+        if sel is None:
+            self._library_selected = set()
+            sel = self._library_selected
+        if text in sel:
+            sel.discard(text)
+        else:
+            sel.add(text)
+        self.refresh_history_ui()
+
+    def library_select_all(self):
+        self._library_selected = set(self._library_visible_lines())
+        self.refresh_history_ui()
+        n = len(self._library_selected)
+        self.show_toast(f"Selected {n} line{'s' if n != 1 else ''}", kind="info")
+
+    def library_clear_selection(self):
+        self._library_selected = set()
+        self.refresh_history_ui()
+        self.show_toast("Selection cleared", kind="info")
+
+    def library_delete_selected(self):
+        selected = [t for t in (getattr(self, "_library_selected", set()) or set()) if t]
+        if not selected:
+            self.show_toast("Nothing selected", kind="warn")
+            return
+        n = len(selected)
+        preview = selected[0][:80] + ("…" if len(selected[0]) > 80 else "")
+        extra = f"\n\n+ {n - 1} more" if n > 1 else ""
+        if not messagebox.askyesno(
+            "Delete selected?",
+            f"Remove {n} line{'s' if n != 1 else ''} from history / favorites?\n\n{preview}{extra}",
+        ):
+            return
+        self.delete_lines(selected, confirm=False)
+        self._library_selected = set()
+        self.show_toast(f"Deleted {n} line{'s' if n != 1 else ''}", kind="info")
+
+    def _library_section_label(self, parent, text: str):
+        ctk.CTkLabel(
+            parent, text=text, font=f_ui(11, "bold"), text_color=C["muted"], anchor="w",
+        ).pack(fill="x", padx=pad(4), pady=(pad(8), pad(2)))
+
+    def _add_library_row(self, item: str, *, section: str = "history"):
+        selected = item in getattr(self, "_library_selected", set())
+        row_bg = C["hover"] if selected else "transparent"
+        row = ctk.CTkFrame(self.history_scroll, fg_color=row_bg, corner_radius=8)
+        row.pack(fill="x", pady=pad(3), padx=pad(2))
+
+        # Multi-select checkbox (not CTkCheckBox — avoid BooleanVar churn on rebuild)
+        check = ctk.CTkButton(
+            row,
+            text="☑" if selected else "☐",
+            width=sz(36),
+            height=sz(40),
+            font=f_ui(16),
+            fg_color=C["accent"] if selected else C["surface"],
+            hover_color=C["accent_h"] if selected else C["hover"],
+            text_color=C["text"] if selected else C["muted"],
+            border_width=0 if selected else 1,
+            border_color=C["line"],
+            command=lambda t=item: self.library_toggle_select(t),
+        )
+        check.pack(side="left", padx=(pad(4), pad(6)))
+        tip(check, "Select for batch delete")
+
+        count = self.copy_counts.get(item, 0)
+        label = item if len(item) < 72 else item[:69] + "…"
+        if count:
+            label = f"{count}×  {label}"
+        if section == "favorites" and item not in (self.history or []):
+            label = f"★  {label}"
+
+        ctk.CTkButton(
+            row, text=label, anchor="w", height=sz(40), font=f_ui(12),
+            fg_color=C["surface"], hover_color=C["hover"],
+            border_width=1 if selected else 0,
+            border_color=C["accent"] if selected else C["line"],
+            command=lambda t=item: self.recopy_history(t),
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        star = "★" if item in self.favorites else "☆"
+        self._icon_btn(row, star, lambda t=item: self.toggle_favorite(t)).pack(side="left", padx=pad(4))
+        self._icon_btn(row, "⌫", lambda t=item: self.delete_line(t), danger=True).pack(
+            side="left", padx=(pad(6), pad(4))
+        )
 
     def refresh_history_ui(self):
         if not hasattr(self, "history_scroll"):
             return
         for w in self.history_scroll.winfo_children():
             w.destroy()
-        if not self.history:
+
+        favs = [(f or "").strip() for f in (self.favorites or []) if (f or "").strip()]
+        hist = [(h or "").strip() for h in (self.history or []) if (h or "").strip()]
+        fav_set = set(favs)
+        # History rows exclude starred (those live under FAVORITES only — no double rows)
+        hist_only = [h for h in reversed(hist) if h not in fav_set]
+
+        if not favs and not hist:
             ctk.CTkLabel(
-                self.history_scroll, text="No history yet. Your best lines will land here.",
-                text_color=C["faint"], font=f_ui(12),
-            ).pack(pady=24)
+                self.history_scroll,
+                text="No lines yet. Write + Copy something — it lands here.",
+                text_color=C["muted"], font=f_ui(13),
+            ).pack(pady=28)
+            self._update_library_selection_ui()
             return
-        for item in reversed(self.history):
-            row = ctk.CTkFrame(self.history_scroll, fg_color="transparent")
-            row.pack(fill="x", pady=pad(4))
-            count = self.copy_counts.get(item, 0)
-            label = item if len(item) < 78 else item[:75] + "…"
-            if count:
-                label = f"{count}×  {label}"
-            ctk.CTkButton(
-                row, text=label, anchor="w", height=sz(40), font=f_ui(12),
-                fg_color=C["surface"], hover_color=C["hover"],
-                command=lambda t=item: self.recopy_history(t),
-            ).pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
-            star = "★" if item in self.favorites else "☆"
-            self._icon_btn(row, star, lambda t=item: self.toggle_favorite(t)).pack(side="left", padx=pad(4))
-            self._icon_btn(row, "⌫", lambda t=item: self.delete_line(t), danger=True).pack(
-                side="left", padx=(pad(8), 0)
-            )
+
+        if favs:
+            self._library_section_label(self.history_scroll, f"FAVORITES  ·  {len(favs)}")
+            for item in favs:
+                self._add_library_row(item, section="favorites")
+
+        if hist_only:
+            self._library_section_label(self.history_scroll, f"HISTORY  ·  {len(hist_only)}")
+            for item in hist_only:
+                self._add_library_row(item, section="history")
+        elif hist and favs and not hist_only:
+            ctk.CTkLabel(
+                self.history_scroll,
+                text="All history lines are starred — see Favorites above.",
+                font=f_ui(12), text_color=C["muted"],
+            ).pack(anchor="w", padx=pad(6), pady=(pad(6), pad(4)))
+
+        self._update_library_selection_ui()
 
     def build_calculator_tab(self):
         """Simple four-function calculator with optional keyboard capture mode."""
@@ -4898,7 +5316,7 @@ class GamersChatHelper:
         )
         out.pack(fill="both", expand=True, padx=pad(12), pady=(0, pad(12)))
         ctk.CTkLabel(
-            out, text="READ FROM SCREEN", font=f_ui(10, "bold"), text_color=C["faint"],
+            out, text="READ FROM SCREEN", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(4)))
 
         self.economy_comps = ctk.CTkTextbox(
@@ -4965,7 +5383,7 @@ class GamersChatHelper:
         flip = ctk.CTkFrame(out, fg_color=C["surface"], corner_radius=10)
         flip.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         ctk.CTkLabel(
-            flip, text="FLIP PROFIT", font=f_ui(10, "bold"), text_color=C["faint"],
+            flip, text="FLIP PROFIT", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(10), pady=(pad(8), pad(2)))
         fr = ctk.CTkFrame(flip, fg_color="transparent")
         fr.pack(fill="x", padx=pad(10), pady=(0, pad(4)))
@@ -4990,7 +5408,7 @@ class GamersChatHelper:
         macros = ctk.CTkFrame(out, fg_color=C["surface"], corner_radius=10)
         macros.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         ctk.CTkLabel(
-            macros, text="WTS MACROS · one-tap paste", font=f_ui(10, "bold"), text_color=C["faint"],
+            macros, text="WTS MACROS · one-tap paste", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(10), pady=(pad(8), pad(4)))
         mrow = ctk.CTkFrame(macros, fg_color="transparent")
         mrow.pack(fill="x", padx=pad(10), pady=(0, pad(8)))
@@ -5013,7 +5431,7 @@ class GamersChatHelper:
         hist_box = ctk.CTkFrame(out, fg_color=C["surface"], corner_radius=10)
         hist_box.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         ctk.CTkLabel(
-            hist_box, text="PRICE LOG", font=f_ui(10, "bold"), text_color=C["faint"],
+            hist_box, text="PRICE LOG", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(10), pady=(pad(8), pad(2)))
         self.economy_hist_label = ctk.CTkLabel(
             hist_box, text=self._economy_hist_summary(), font=f_ui(11), text_color=C["muted"],
@@ -5040,7 +5458,7 @@ class GamersChatHelper:
         )
         restart_bar.pack(fill="x", padx=pad(12), pady=(pad(12), pad(6)))
         ctk.CTkLabel(
-            restart_bar, text="APP · RESTART", font=f_ui(10, "bold"), text_color=C["faint"],
+            restart_bar, text="APP · RESTART", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(10), pad(2)))
         ctk.CTkLabel(
             restart_bar,
@@ -5065,7 +5483,7 @@ class GamersChatHelper:
         a11y = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
         a11y.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
         ctk.CTkLabel(
-            a11y, text="TYPE SIZE", font=f_ui(10, "bold"), text_color=C["faint"],
+            a11y, text="TYPE SIZE", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(4)))
         row = ctk.CTkFrame(a11y, fg_color="transparent")
         row.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
@@ -5084,7 +5502,7 @@ class GamersChatHelper:
         style_box = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
         style_box.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
         ctk.CTkLabel(
-            style_box, text="HOUSE STYLE · PER GAME", font=f_ui(10, "bold"), text_color=C["faint"],
+            style_box, text="HOUSE STYLE · PER GAME", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(2)))
         ctk.CTkLabel(
             style_box,
@@ -5130,7 +5548,7 @@ class GamersChatHelper:
         steam_box = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
         steam_box.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
         ctk.CTkLabel(
-            steam_box, text="STEAM POPULATION LOG", font=f_ui(10, "bold"), text_color=C["faint"],
+            steam_box, text="STEAM POPULATION LOG", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(4)))
         ctk.CTkLabel(
             steam_box,
@@ -5240,7 +5658,7 @@ class GamersChatHelper:
         report_head.pack(fill="x", padx=pad(12), pady=(pad(10), pad(2)))
         ctk.CTkLabel(
             report_head, text="POPULATION REPORT · HIGH / LOW + TRENDS + REGIONS",
-            font=f_ui(10, "bold"), text_color=C["faint"],
+            font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(side="left")
         self.steam_pop_copy_btn = ctk.CTkButton(
             report_head, text="Copy for Discord", height=sz(28), width=sz(130),
@@ -5272,7 +5690,7 @@ class GamersChatHelper:
         tips = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
         tips.pack(fill="both", expand=True, padx=pad(12), pady=(0, pad(12)))
         ctk.CTkLabel(
-            tips, text="QUICK SETUP", font=f_ui(10, "bold"), text_color=C["faint"],
+            tips, text="QUICK SETUP", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(6)))
         for line in (
             "• LM Studio (above): Local or Remote host · Test (green/red) · model dropdown",
@@ -5304,7 +5722,7 @@ class GamersChatHelper:
         self.lm_setup_frame = lm
 
         ctk.CTkLabel(
-            lm, text="LM STUDIO · LOCAL AI", font=f_ui(10, "bold"), text_color=C["faint"],
+            lm, text="LM STUDIO · LOCAL AI", font=f_ui(11, "bold"), text_color=C["muted"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(2)))
         ctk.CTkLabel(
             lm,
@@ -5856,7 +6274,7 @@ class GamersChatHelper:
         return ""
 
     def set_gen_text(self, text: str, also_ai: bool = True, also_hud: bool = True):
-        """Write into the main generated-line editor (+ optional mirrors)."""
+        """Write into Your Line (single canvas; recruit pitch lives here too)."""
         text = (text or "").strip()
         if hasattr(self, "gen_editor"):
             try:
@@ -5868,7 +6286,8 @@ class GamersChatHelper:
         self._update_quick_out_meter()
         if text and not self._is_err(text):
             self._last_good_line = text
-        if also_ai and hasattr(self, "ai_output"):
+        # ai_output may be the same widget as gen_editor — skip duplicate write
+        if also_ai and hasattr(self, "ai_output") and self.ai_output is not getattr(self, "gen_editor", None):
             try:
                 self.ai_output.delete("1.0", tk.END)
                 if text:
@@ -7033,13 +7452,45 @@ class GamersChatHelper:
             self._update_len_label(self.quick_len, text)
         if hasattr(self, "editor_len"):
             self._update_len_label(self.editor_len, text)
+        # Length-vs-limit bar under Your Line (labeled; replaces unlabeled Recruit bar)
+        lim = self.limit()
+        length = len(text or "")
+        if hasattr(self, "safety_progressbar"):
+            try:
+                self.safety_progressbar.set(min(length / max(lim, 1), 1.0))
+                color = (
+                    C["danger"] if length > lim
+                    else C["warn"] if length >= max(1, int(lim * 0.9))
+                    else C["success"]
+                )
+                self.safety_progressbar.configure(progress_color=color)
+            except Exception:
+                pass
+        if hasattr(self, "limit_meter_label"):
+            try:
+                if length > lim:
+                    self.limit_meter_label.configure(
+                        text=f"Over limit by {length - lim}",
+                        text_color=C["danger"],
+                    )
+                elif length >= max(1, int(lim * 0.9)):
+                    self.limit_meter_label.configure(
+                        text=f"Near limit  ·  {length} / {lim}",
+                        text_color=C["warn"],
+                    )
+                else:
+                    self.limit_meter_label.configure(
+                        text=f"Length vs limit  ·  {length} / {lim}",
+                        text_color=C["muted"],
+                    )
+            except Exception:
+                pass
 
-    def delete_line(self, phrase: str, confirm: bool = True):
+    def _remove_line_data(self, phrase: str) -> bool:
+        """Remove one phrase from favorites/history/stock visibility. No UI refresh."""
         phrase = (phrase or "").strip()
         if not phrase:
-            return
-        if confirm and not messagebox.askyesno("Delete", f"Remove this line?\n\n{phrase[:120]}"):
-            return
+            return False
 
         game = self.game_var.get()
         if phrase in self.favorites:
@@ -7059,16 +7510,58 @@ class GamersChatHelper:
         elif phrase in hidden:
             self.hidden_lines[game] = [h for h in hidden if h != phrase]
 
-        if self._selected_quick == phrase:
+        if getattr(self, "_selected_quick", None) == phrase:
             self._selected_quick = None
         if self._last_good_line == phrase:
             self._last_good_line = self.history[-1] if self.history else ""
-            self.refresh_hud_line()
+        if phrase in getattr(self, "_library_selected", set()):
+            self._library_selected.discard(phrase)
+        return True
 
+    def delete_line(self, phrase: str, confirm: bool = True):
+        phrase = (phrase or "").strip()
+        if not phrase:
+            return
+        if confirm and not messagebox.askyesno("Delete", f"Remove this line?\n\n{phrase[:120]}"):
+            return
+        if not self._remove_line_data(phrase):
+            return
         self.rebuild_quick_buttons()
         self.refresh_history_ui()
+        self.refresh_hud_line()
         self.save_settings()
         self.show_toast("Deleted", kind="info")
+
+    def delete_lines(self, phrases: list[str], confirm: bool = True):
+        """Batch delete many lines with a single refresh (Library multi-select)."""
+        cleaned = []
+        seen: set[str] = set()
+        for p in phrases or []:
+            t = (p or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                cleaned.append(t)
+        if not cleaned:
+            return
+        if confirm:
+            n = len(cleaned)
+            preview = cleaned[0][:100] + ("…" if len(cleaned[0]) > 100 else "")
+            extra = f"\n\n+ {n - 1} more" if n > 1 else ""
+            if not messagebox.askyesno(
+                "Delete lines?",
+                f"Remove {n} line{'s' if n != 1 else ''}?\n\n{preview}{extra}",
+            ):
+                return
+        changed = False
+        for phrase in cleaned:
+            if self._remove_line_data(phrase):
+                changed = True
+        if not changed:
+            return
+        self.rebuild_quick_buttons()
+        self.refresh_history_ui()
+        self.refresh_hud_line()
+        self.save_settings()
 
     def clear_your_lines_menu(self):
         dlg = ctk.CTkToplevel(self.root)
@@ -7081,8 +7574,9 @@ class GamersChatHelper:
 
         ctk.CTkLabel(dlg, text="Manage lines", font=f_ui(15, "bold")).pack(pady=(18, 4))
         ctk.CTkLabel(
-            dlg, text="Or use ⌫ on any row to delete one line.",
-            font=f_ui(11), text_color=C["muted"],
+            dlg,
+            text="Or multi-select in Library and Delete selected.\nSingle-line: use ⌫ on any row.",
+            font=f_ui(12), text_color=C["muted"],
         ).pack(pady=(0, 12))
 
         def close():
@@ -7163,10 +7657,19 @@ class GamersChatHelper:
         self.safe_copy(text)
 
     def clear_history(self):
+        if self.history and not messagebox.askyesno(
+            "Clear history?",
+            f"Remove all {len(self.history)} history lines?\n\nFavorites are kept.",
+        ):
+            return
         self.history.clear()
+        self._library_selected = {
+            t for t in getattr(self, "_library_selected", set()) if t in (self.favorites or [])
+        }
         self.refresh_history_ui()
         self.rebuild_quick_buttons()
         self.save_settings()
+        self.show_toast("History cleared", kind="info")
 
     def toggle_favorite(self, text: str):
         text = text.strip()
@@ -7220,7 +7723,7 @@ class GamersChatHelper:
 
         lim = self.limit()
         if len(text) > lim:
-            self.copy_badge.configure(text="blocked", text_color=C["danger"])
+            self._set_ready_status("blocked", C["danger"])
             self.show_toast(f"Over limit · {len(text)}/{lim}", kind="error")
             if messagebox.askyesno("Over limit", f"{len(text)} / {lim} chars.\n\nCopy trimmed version?"):
                 text = self.trim_to_limit(text)
@@ -7252,7 +7755,8 @@ class GamersChatHelper:
                     pass
             self.save_settings()
 
-        self.copy_badge.configure(text=f"copied · {len(text)}", text_color=C["success"])
+        # Length lives on Your Line meter / session chip — badge is status only
+        self._set_ready_status("copied", C["success"])
         hype = random.choice(HYPE_LINES) if self.session_streak >= 2 else f"Copied · {len(text)}/{lim}"
         self.show_toast(hype, kind="ok")
         self.set_status(hype)
@@ -7269,7 +7773,9 @@ class GamersChatHelper:
                 btn.configure(text="✓ Copied")
                 self.root.after(
                     900,
-                    lambda b=btn: b.configure(text="Copy") if b.winfo_exists() else None,
+                    lambda b=btn: (
+                        b.configure(text="Copy  ·  F7") if b.winfo_exists() else None
+                    ),
                 )
             except Exception:
                 pass
@@ -7328,13 +7834,37 @@ class GamersChatHelper:
         except Exception:
             pass
 
+    def _set_ready_status(self, text: str, color: str | None = None):
+        """
+        System ready/copy status — shown only in the footer session chip
+        (no duplicate header badge; UX critique Tier 2).
+        """
+        text = (text or "ready").strip() or "ready"
+        color = color or C["muted"]
+        self._ready_status = text
+        self._ready_status_color = color
+        if hasattr(self, "copy_badge"):
+            try:
+                self.copy_badge.configure(text=text, text_color=color)
+            except Exception:
+                pass
+        self.update_session_chip()
+
     def update_session_chip(self):
         if not hasattr(self, "session_chip"):
             return
+        status = getattr(self, "_ready_status", "ready") or "ready"
+        color = getattr(self, "_ready_status_color", None) or C["muted"]
         streak = f"  ·  🔥{self.session_streak}" if self.session_streak >= 2 else ""
-        self.session_chip.configure(
-            text=f"{self.session_copies} copies  ·  {self.session_gens} gens{streak}"
-        )
+        # Prefer status color when active (copied/thinking/blocked); else calm text
+        chip_color = color if status not in ("ready",) else C["text"]
+        try:
+            self.session_chip.configure(
+                text=f"{status}  ·  {self.session_copies} copies  ·  {self.session_gens} gens{streak}",
+                text_color=chip_color,
+            )
+        except Exception:
+            pass
 
     def _tip_rotate(self):
         if not self._tk_alive():
@@ -7397,9 +7927,7 @@ class GamersChatHelper:
         except Exception:
             pass
         self.set_intent("recruit")
-        text = ""
-        if hasattr(self, "msg_textbox"):
-            text = self.msg_textbox.get("1.0", "end-1c").strip()
+        text = self.get_gen_text()
         if text:
             self.ai_fit_recruitment()
         else:
@@ -7668,7 +8196,7 @@ class GamersChatHelper:
         self._last_ocr_error = ""
         self._refresh_ocr_status("capturing…")
         self.set_status("Grabbing chat area…")
-        self.copy_badge.configure(text="ocr…", text_color=C["warn"])
+        self._set_ready_status("ocr…", C["warn"])
 
         # Briefly get out of the way if overlapping
         was_top = bool(self.always_on_top.get()) if hasattr(self, "always_on_top") else False
@@ -7723,7 +8251,7 @@ class GamersChatHelper:
                 if err:
                     self.show_toast("Capture failed", kind="error")
                     self._refresh_ocr_status(f"error: {err[:48]}")
-                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self._set_ready_status("ready", C["muted"])
                     messagebox.showerror(
                         "Grab failed",
                         f"Could not capture or read chat.\n\n{err}\n\n"
@@ -7736,7 +8264,7 @@ class GamersChatHelper:
                     self._refresh_ocr_status(
                         f"empty · {detail[:40]}" if detail else "empty · VL/Tesseract failed"
                     )
-                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self._set_ready_status("ready", C["muted"])
                     messagebox.showinfo(
                         "OCR empty",
                         "Couldn't read chat text from the grab.\n\n"
@@ -7760,7 +8288,7 @@ class GamersChatHelper:
                 self._refresh_ocr_status(f"via {engine}")
                 self.show_toast(f"OCR · {engine}", kind="ok")
                 self.set_status(f"OCR ({engine}): {text[:60]}{'…' if len(text) > 60 else ''}")
-                self.copy_badge.configure(text="ready", text_color=C["muted"])
+                self._set_ready_status("ready", C["muted"])
                 if and_reply:
                     # Entry is updated; generate clap-back against that line
                     self.root.after(50, self.generate_response_from_quick)
@@ -7841,7 +8369,7 @@ class GamersChatHelper:
         self._economy_busy = True
         self._refresh_market_status("capturing…")
         self.set_status("Snapping market area…")
-        self.copy_badge.configure(text="market…", text_color=C["warn"])
+        self._set_ready_status("market…", C["warn"])
 
         was_top = bool(self.always_on_top.get()) if hasattr(self, "always_on_top") else False
         try:
@@ -7884,12 +8412,12 @@ class GamersChatHelper:
                 if err:
                     self.show_toast("Market capture failed", kind="error")
                     self._refresh_market_status(f"error: {err[:48]}")
-                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self._set_ready_status("ready", C["muted"])
                     return
                 if not raw_out or self._is_err(raw_out):
                     self.show_toast("Could not read market — need VL model?", kind="warn")
                     self._refresh_market_status("empty · load vision model in LM Studio")
-                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self._set_ready_status("ready", C["muted"])
                     messagebox.showinfo(
                         "Economy empty",
                         "Couldn't read market listings.\n\n"
@@ -7908,7 +8436,7 @@ class GamersChatHelper:
                 self.update_session_chip()
                 self.show_toast(f"Economy · {engine}", kind="ok")
                 self.set_status(f"Economy ({engine}): {parsed.get('suggest') or 'see comps'}")
-                self.copy_badge.configure(text="ready", text_color=C["muted"])
+                self._set_ready_status("ready", C["muted"])
                 if self.auto_copy.get() and parsed.get("wts"):
                     try:
                         self.safe_copy(parsed["wts"])
@@ -8600,20 +9128,95 @@ class GamersChatHelper:
                 except Exception:
                     pass
 
-        if load_editor and hasattr(self, "msg_textbox"):
+        if load_editor:
+            # Name field always tracks selection; Your Line only when Recruit is active
+            # (single canvas — don't clobber an LFG/reply draft with a pitch on refresh)
             try:
-                self.msg_textbox.delete("1.0", tk.END)
                 if item:
-                    self.msg_textbox.insert("1.0", item.get("text") or "")
                     if hasattr(self, "recruit_name_var"):
                         self.recruit_name_var.set(str(item.get("name") or ""))
                 else:
                     if hasattr(self, "recruit_name_var"):
                         self.recruit_name_var.set("")
+                intent = ""
+                if hasattr(self, "generator_intent"):
+                    intent = (self.generator_intent.get() or "").strip()
+                else:
+                    intent = getattr(self, "saved_generator_intent", "") or ""
+                if intent == "recruit" and hasattr(self, "gen_editor"):
+                    self.set_gen_text(
+                        (item.get("text") if item else "") or "",
+                        also_ai=True,
+                        also_hud=True,
+                    )
+                    self.update_counter()
+                    self._recruit_mark_clean()
             except Exception:
                 pass
-            self.update_counter()
         self._update_recruit_crud_status()
+
+    def _recruit_snapshot_text(self) -> str:
+        item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        if item:
+            return (item.get("text") or "").strip()
+        return ""
+
+    def _recruit_mark_clean(self):
+        """Baseline after load/save — Your Line matches disk."""
+        self._recruit_dirty = False
+        self._recruit_clean_text = self.get_gen_text()
+        self._update_recruit_save_btn()
+        self._update_recruit_crud_status()
+
+    def _recruit_mark_dirty(self, reason: str = ""):
+        """AI rewrite or edit differs from last saved pitch — prompt Save."""
+        self._recruit_dirty = True
+        self._update_recruit_save_btn()
+        self._update_recruit_crud_status()
+        if reason:
+            self.set_status(reason)
+
+    def _recruit_check_dirty_from_editor(self, event=None):
+        """While on Recruit, keep Save* in sync with Your Line edits."""
+        try:
+            intent = ""
+            if hasattr(self, "generator_intent"):
+                intent = (self.generator_intent.get() or "").strip()
+            if intent != "recruit":
+                return
+            cur = self.get_gen_text()
+            base = getattr(self, "_recruit_clean_text", None)
+            if base is None:
+                base = self._recruit_snapshot_text()
+            dirty = cur != (base or "").strip()
+            if dirty != bool(getattr(self, "_recruit_dirty", False)):
+                self._recruit_dirty = dirty
+                self._update_recruit_save_btn()
+                self._update_recruit_crud_status()
+        except Exception:
+            pass
+
+    def _update_recruit_save_btn(self):
+        if not hasattr(self, "recruit_save_btn"):
+            return
+        dirty = bool(getattr(self, "_recruit_dirty", False))
+        try:
+            if dirty:
+                self.recruit_save_btn.configure(
+                    text="Save *",
+                    fg_color=C["warn"],
+                    hover_color="#d97706",
+                    text_color="#1a1200",
+                )
+            else:
+                self.recruit_save_btn.configure(
+                    text="Save",
+                    fg_color=C["accent"],
+                    hover_color=C["accent_h"],
+                    text_color=C["text"],
+                )
+        except Exception:
+            pass
 
     def _update_recruit_crud_status(self):
         """Show Create vs Update state next to the pitch picker."""
@@ -8621,8 +9224,14 @@ class GamersChatHelper:
             return
         n = len(getattr(self, "recruit_templates", None) or [])
         item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        dirty = bool(getattr(self, "_recruit_dirty", False))
         try:
-            if item:
+            if dirty:
+                self.recruit_crud_status.configure(
+                    text="Unsaved changes — press Save",
+                    text_color=C["warn"],
+                )
+            elif item:
                 name = str(item.get("name") or "pitch")[:28]
                 self.recruit_crud_status.configure(
                     text=f"Editing · {name}  ({n})",
@@ -8631,7 +9240,7 @@ class GamersChatHelper:
             else:
                 self.recruit_crud_status.configure(
                     text=f"New draft  ({n} saved)",
-                    text_color=C["faint"],
+                    text_color=C["muted"],
                 )
         except Exception:
             pass
@@ -8649,13 +9258,11 @@ class GamersChatHelper:
         if not item:
             return
         self._recruit_selected_id = item.get("id")
-        if hasattr(self, "msg_textbox"):
-            self.msg_textbox.delete("1.0", tk.END)
-            self.msg_textbox.insert("1.0", item.get("text") or "")
+        self.set_gen_text(item.get("text") or "", also_ai=True, also_hud=True)
         if hasattr(self, "recruit_name_var"):
             self.recruit_name_var.set(str(item.get("name") or ""))
         self.update_counter()
-        self._update_recruit_crud_status()
+        self._recruit_mark_clean()
         # Remember selection in file (light write)
         self._save_recruit_file()
         self.show_toast(f"Loaded · {item.get('name') or 'pitch'}", kind="info")
@@ -8665,8 +9272,8 @@ class GamersChatHelper:
         self._recruit_selected_id = None
         if hasattr(self, "recruit_name_var"):
             self.recruit_name_var.set("")
-        if hasattr(self, "msg_textbox"):
-            self.msg_textbox.delete("1.0", tk.END)
+        self.set_gen_text("", also_ai=True, also_hud=True)
+        self._recruit_mark_clean()
         self._refresh_recruit_ui(load_editor=False)
         if hasattr(self, "template_combo"):
             try:
@@ -8681,11 +9288,9 @@ class GamersChatHelper:
 
     def recruit_save(self):
         """Update selected pitch, or Create if no selection → recruit_templates.json."""
-        if not hasattr(self, "msg_textbox"):
-            return
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        text = self.get_gen_text()
         if not text:
-            messagebox.showwarning("Empty", "Write a recruiting message first.")
+            messagebox.showwarning("Empty", "Write a recruiting message in Your Line first.")
             return
         name = ""
         if hasattr(self, "recruit_name_var"):
@@ -8709,6 +9314,7 @@ class GamersChatHelper:
         if self._save_recruit_file():
             self.save_settings()
             self._refresh_recruit_ui(load_editor=True)
+            self._recruit_mark_clean()
 
     def recruit_save_as_new(self):
         """Always create a new pitch from the current editor (keeps the old one)."""
@@ -8717,9 +9323,7 @@ class GamersChatHelper:
 
     def recruit_duplicate(self):
         """Duplicate — save a copy of the current pitch as a new named entry."""
-        if not hasattr(self, "msg_textbox"):
-            return
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        text = self.get_gen_text()
         if not text:
             messagebox.showwarning("Empty", "Nothing to duplicate — load or type a pitch first.")
             return
@@ -8765,9 +9369,7 @@ class GamersChatHelper:
         item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
         if not item:
             # Try match editor text to a saved item
-            text = ""
-            if hasattr(self, "msg_textbox"):
-                text = self.msg_textbox.get("1.0", "end-1c").strip()
+            text = self.get_gen_text()
             for t in self.recruit_templates or []:
                 if (t.get("text") or "").strip() == text and text:
                     item = t
@@ -8827,41 +9429,23 @@ class GamersChatHelper:
             self.show_toast("All recruit pitches cleared", kind="info")
 
     def update_counter(self, event=None):
-        if not hasattr(self, "msg_textbox") or not hasattr(self, "counter_label"):
-            return
-        text = self.msg_textbox.get("1.0", "end-1c")
-        lim = self.limit()
-        length = len(text)
-        if hasattr(self, "safety_progressbar"):
-            self.safety_progressbar.set(min(length / max(lim, 1), 1.0))
-        self.counter_label.configure(text=f"{length} / {lim}")
-        color = C["danger"] if length > lim else C["warn"] if length >= lim - 15 else C["success"]
-        self.counter_label.configure(text_color=color)
-        if hasattr(self, "safety_progressbar"):
-            self.safety_progressbar.configure(progress_color=color)
+        """Recruit char counter — same meters as Your Line (single canvas)."""
+        self._update_quick_out_meter()
 
     def copy_recruitment(self):
-        """Copy the Recruit message box (also syncs Generated line)."""
-        if not hasattr(self, "msg_textbox"):
-            return
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
-        if text:
-            self.set_gen_text(text, also_ai=True, also_hud=True)
-        self.safe_copy(text)
+        """Copy Your Line (recruit pitch lives there)."""
+        self.copy_quick_out()
 
     def recruit_to_editor(self):
-        """Push recruit message into Generated line without copying."""
-        if not hasattr(self, "msg_textbox"):
-            return
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        """No-op: pitch already is Your Line (kept for older hooks)."""
+        text = self.get_gen_text()
         if not text:
-            self.show_toast("Recruit message is empty", kind="warn")
+            self.show_toast("Your Line is empty", kind="warn")
             return
-        self.set_gen_text(text, also_ai=True, also_hud=True)
-        self.show_toast("In Generated line — Copy when ready", kind="info")
+        self.show_toast("Already in Your Line — Copy when ready", kind="info")
 
     def ai_fit_recruitment(self):
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        text = self._recruit_seed_text()
         if not text:
             messagebox.showwarning("Empty", "Write or pick a message first.")
             return
@@ -8871,6 +9455,7 @@ class GamersChatHelper:
             f"JOB: guild recruitment rewrite for {game} global/trade chat.\n"
             f"Keep the SAME core offer and facts. Do not invent new benefits.\n"
             f"Sound native to {game}, scannable, not corporate.\n"
+            f"{self._ai_seed_prompt_block(strict=True)}"
             f"HARD LIMIT: under {lim} characters.\n"
             f"Output ONLY the recruitment line.\n\n"
             f"Original:\n{text}"
@@ -8879,10 +9464,8 @@ class GamersChatHelper:
         self.run_llm_async(prompt, on_done=self._apply_recruit_result, job="recruit")
 
     def _recruit_seed_text(self) -> str:
-        """Current pitch used as the variation seed."""
-        if not hasattr(self, "msg_textbox"):
-            return ""
-        return self.msg_textbox.get("1.0", "end-1c").strip()
+        """Current pitch used as the variation seed (Your Line)."""
+        return self.get_gen_text()
 
     def _recruit_variant_direction(self) -> str:
         if hasattr(self, "recruit_variant_seed_var"):
@@ -8893,7 +9476,7 @@ class GamersChatHelper:
         """
         AI variation of the current recruit message (seed).
         Optional Variant seed steers tone/length (shorter, chill, mention X…).
-        n=3 fills the option buttons under Generated line.
+        n=3 fills the option buttons under Your Line.
         save_as_new=True → after a good result, write a NEW pitch to recruit_templates.json.
         """
         text = self._recruit_seed_text()
@@ -8936,6 +9519,7 @@ class GamersChatHelper:
                 f"Write ONE new guild recruiting chat line for {game}.\n"
                 f"This is a VARIANT of the seed below — same facts, new wording.\n"
                 f"{dir_bit}"
+                f"{self._ai_seed_prompt_block(strict=True)}"
                 f"Keep guild/clan name, core benefits, and how to apply if present.\n"
                 f"Do NOT invent Discord requirements, buffs, or content the seed never said.\n"
                 f"Do NOT copy phrases from the seed word-for-word.\n"
@@ -8969,6 +9553,7 @@ class GamersChatHelper:
             f"Write THREE different guild recruiting chat lines for {game}.\n"
             f"Each is a VARIANT of the same seed pitch — same facts, different wording.\n"
             f"{dir_bit}"
+            f"{self._ai_seed_prompt_block(strict=True)}"
             f"1 = tighter / shorter\n"
             f"2 = friendlier / chill\n"
             f"3 = punchier / more hype (still chat-safe)\n"
@@ -8982,7 +9567,7 @@ class GamersChatHelper:
         )
         self._last_gen_mode = "recruit_variant"
         self.set_status("Recruit ×3 variants…")
-        self.copy_badge.configure(text="thinking", text_color=C["warn"])
+        self._set_ready_status("thinking", C["warn"])
 
         if self._busy:
             self.set_status("Already generating…")
@@ -9039,7 +9624,7 @@ class GamersChatHelper:
                             "3 variants ready — pick 1–3, then Save as new",
                             kind="ok",
                         )
-                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self._set_ready_status("ready", C["muted"])
                     self.set_status("Recruit variants ready")
 
                 self.ui_safe(apply)
@@ -9082,10 +9667,7 @@ class GamersChatHelper:
         self._recruit_selected_id = rid
         if hasattr(self, "recruit_name_var"):
             self.recruit_name_var.set(name)
-        if hasattr(self, "msg_textbox"):
-            self.msg_textbox.delete("1.0", tk.END)
-            self.msg_textbox.insert("1.0", text)
-            self.update_counter()
+        self.set_gen_text(text, also_ai=True, also_hud=True)
         ok = self._save_recruit_file()
         if ok:
             self.save_settings()
@@ -9127,18 +9709,16 @@ class GamersChatHelper:
                     self.show_toast("Variant ready — save failed", kind="warn")
                 return
 
-            if hasattr(self, "msg_textbox"):
-                self.msg_textbox.delete("1.0", tk.END)
-                self.msg_textbox.insert("1.0", reply)
-                self.update_counter()
+            # Single canvas: rewrite Your Line in place (no second pitch box)
             self.set_gen_text(reply, also_ai=True, also_hud=True)
             if self.auto_copy.get():
                 self.safe_copy(reply)
             else:
                 self.push_history(reply, count=False)
             mode = getattr(self, "_last_gen_mode", "") or ""
-            if mode == "recruit_variant":
-                self.show_toast("Recruit variant ready — Save as new to keep", kind="ok")
+            if mode in ("recruit_variant", "recruit"):
+                self._recruit_mark_dirty("AI rewrite not saved — press Save to keep")
+                self.show_toast("Variant in Your Line — Save * to keep", kind="ok")
 
         self.ui_safe(apply)
 
@@ -9649,12 +10229,7 @@ class GamersChatHelper:
     def _pick_recruit_local(self) -> str:
         """Offline: use current recruit draft or first template, fit to limit."""
         lim = self.limit()
-        text = ""
-        try:
-            if hasattr(self, "msg_textbox"):
-                text = self.msg_textbox.get("1.0", "end").strip()
-        except Exception:
-            pass
+        text = self.get_gen_text()
         if not text:
             items = getattr(self, "recruit_templates", None) or []
             if items:
@@ -9785,7 +10360,7 @@ class GamersChatHelper:
             return
         self._busy = True
         self.set_status("Thinking…")
-        self.copy_badge.configure(text="thinking", text_color=C["warn"])
+        self._set_ready_status("thinking", C["warn"])
 
         def work():
             # Fast path only when probe already proved offline (None = try network)
@@ -9817,7 +10392,7 @@ class GamersChatHelper:
                 def apply():
                     if used_offline:
                         self.show_toast("Offline pack (AI off)", kind="info")
-                        self.copy_badge.configure(text="offline pack", text_color=C["warn"])
+                        self._set_ready_status("offline pack", C["warn"])
                     if on_done:
                         on_done(results[0] if results else "")
                     else:
@@ -9836,7 +10411,7 @@ class GamersChatHelper:
             job = getattr(self, "_last_gen_mode", "banter") or "banter"
             reply = self._offline_line(job)
             self.show_toast("Offline pack (AI off)", kind="info")
-            self.copy_badge.configure(text="offline pack", text_color=C["warn"])
+            self._set_ready_status("offline pack", C["warn"])
 
         def apply():
             self.set_gen_text(reply, also_ai=also_ai, also_hud=True)
@@ -9846,7 +10421,7 @@ class GamersChatHelper:
                 self.safe_copy(reply)
             else:
                 self.push_history(reply, count=False)
-                self.copy_badge.configure(text="ready", text_color=C["warn"])
+                self._set_ready_status("ready", C["warn"])
                 self.set_status("Ready — edit above, then Copy.")
 
         self.ui_safe(apply)
@@ -9862,7 +10437,7 @@ class GamersChatHelper:
                 self.safe_copy(reply)
             else:
                 self.push_history(reply, count=False)
-                self.copy_badge.configure(text="ready", text_color=C["warn"])
+                self._set_ready_status("ready", C["warn"])
                 self.set_status("Ready — edit above, then Copy.")
         else:
             if hasattr(self, "ai_output"):
@@ -9870,7 +10445,7 @@ class GamersChatHelper:
                 self.ai_output.insert(tk.END, reply)
                 self.update_ai_counter()
             self.show_toast("AI offline", kind="error")
-            self.copy_badge.configure(text="offline", text_color=C["danger"])
+            self._set_ready_status("offline", C["danger"])
 
     def _show_multi_results(self, results: list[str]):
         cleaned = []
@@ -9887,12 +10462,30 @@ class GamersChatHelper:
     def _set_variant_buttons(self, results: list[str]):
         if not hasattr(self, "variant_btns"):
             return
+        active = 0
         for i, btn in enumerate(self.variant_btns):
-            if i < len(results) and not self._is_err(results[i]):
+            if i < len(results) and results[i] and not self._is_err(results[i]):
                 preview = results[i] if len(results[i]) < 68 else results[i][:65] + "…"
                 btn.configure(text=f"{i + 1}  {preview}", state="normal")
+                if not btn.winfo_ismapped():
+                    btn.pack(fill="x", pady=1)
+                active += 1
             else:
                 btn.configure(text=f"Option {i + 1}", state="disabled")
+                try:
+                    btn.pack_forget()
+                except Exception:
+                    pass
+        # Hide empty Option 1/2/3 placeholders until multi-variant results exist
+        if hasattr(self, "variant_frame"):
+            try:
+                if active >= 2:
+                    if not self.variant_frame.winfo_ismapped():
+                        self.variant_frame.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
+                else:
+                    self.variant_frame.pack_forget()
+            except Exception:
+                pass
 
     def pick_variant(self, idx: int):
         if 0 <= idx < len(self._last_variants):
@@ -9996,6 +10589,7 @@ class GamersChatHelper:
         )
         if seed:
             prompt += f"Loose vibe only (do NOT quote these words): {seed}\n"
+        prompt += self._ai_seed_prompt_block(strict=False)
 
         def done(reply: str):
             if self._is_err(reply):
@@ -10261,6 +10855,7 @@ class GamersChatHelper:
             f"Prefer under {aim} characters (hard max {lim}).\n"
             f"No superlatives, no hype, no essay, no 'as a player'.\n"
             f"No LFG/recruit unless they asked for a group.\n"
+            f"{self._ai_seed_prompt_block(strict=True)}"
             f"{examples}"
             f"Output only the reply."
         )
@@ -10294,6 +10889,7 @@ class GamersChatHelper:
         game = self.game_var.get()
         activity = self.activity_var.get()
         self._last_gen_mode = "triple"
+        shared_seed = self._ai_seed_prompt_block(strict=bool(user_input))
         if user_input:
             lim = self.limit()
             aim = max(20, min(lim, 72))
@@ -10307,24 +10903,29 @@ class GamersChatHelper:
                 f"3 = light tease (still low-key)\n"
                 f"Each under ~{aim} chars. No superlatives, no hype, no essays.\n"
                 f"Each must respond to what they said. No LFG unless they asked.\n"
+                f"{shared_seed}"
                 f"Number them 1. 2. 3. only."
             )
             job = "triple"
         elif seed:
             prompt = (
                 f"Three different original {game} icebreakers for {activity}.\n"
-                f"Loose vibe only (do NOT quote): {seed}"
+                f"Loose vibe only (do NOT quote): {seed}\n"
+                f"{shared_seed}"
             )
             job = "triple"
         else:
-            prompt = f"Three different original {game} icebreakers for {activity}. Invent freely."
+            prompt = (
+                f"Three different original {game} icebreakers for {activity}. Invent freely.\n"
+                f"{shared_seed}"
+            )
             job = "triple"
 
         if self._busy:
             return
         self._busy = True
         self.set_status("Cooking 3 options…")
-        self.copy_badge.configure(text="thinking", text_color=C["warn"])
+        self._set_ready_status("thinking", C["warn"])
 
         def thinking():
             if hasattr(self, "ai_output"):
@@ -10538,6 +11139,7 @@ class GamersChatHelper:
             f"Do NOT say WB/world boss or CZ/combat zone unless CONTENT is World Boss or Combat Zone.\n"
             f"DO NOT recruit for a guild. DO NOT write a joke that skips the content name.\n"
             f"Under {lim} characters. One line. No quotes. No emoji.\n"
+            f"{self._ai_seed_prompt_block(strict=True)}"
         )
 
     def generate_lfg(self):
@@ -10587,7 +11189,9 @@ class GamersChatHelper:
 
         self.run_llm_async(
             f"Rewrite this {game} line fresher for {activity}. Same intent. One line.\n"
-            f"Do not copy wording.\n\n{phrase}",
+            f"Do not copy wording.\n"
+            f"{self._ai_seed_prompt_block(strict=False)}"
+            f"\n{phrase}",
             on_done=done,
             job="spice",
             seed_text=phrase,
