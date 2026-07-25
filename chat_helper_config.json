@@ -7,42 +7,48 @@
         "Custom Short": 100
     },
     "templates": [
-        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up",
-        "Join The Defiants! Casual PvE, dungeons, & world bosses. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!",
-        "Looking for a relaxed home? [Defiants] is recruiting casual PvE players. Group up at your own pace. PST for info!",
-        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister Clan to THE DEFIANT | Direct path to move up",
-        "Welcome.  Join the chaos on discord: https://discord.gg/AsFa4UM3v"
+        "Got a pulse? Join [Kentucky Fried Quin]! No Discord needed. Free leveling & dungeon help, new players welcome. Press O to search & apply!",
+        "[Kentucky Fried Quin] recruiting! Got a pulse & no Discord? Perfect. Free dungeon & level help! Newbies welcome. Press O -> Guild Finder & apply!",
+        "[Kentucky Fried Quin] recruiting warm bodies!No Discord,no BS.We help level & dungeons. Noobs welcome! Apply via O. Guild Finder. Att/Def/HP buffs Ch4",
+        "We run 8 - 11 US Central Time during the week. We are near Pabas which is close to Arachnid Temple Group for farming.",
+        "[Kentucky Fried Quin] need crew? Free DG runs, no BS. Noobs safe! Apply via O. Guild Finder. Att/Def/HP buffs Ch4",
+        "[Kentucky Fried Quin] Crew? Free DGs, no fluff. Noobs welcome! Apply via O. Guild Finder. Get Att/Def/HP buffs in Ch4",
+        "[Kentucky Fried Quin] Free DGs, no fluff. Noobs? We got you. Apply via O. Buffs in Ch4 \u2014 come loot with us."
     ],
-    "api_url": "http://127.0.0.1:1234/v1/chat/completions",
+    "api_url": "http://192.168.4.60:1234/v1/chat/completions",
+    "lm_mode": "Remote",
+    "lm_host": "192.168.4.60:1234",
+    "lm_api_key": "",
+    "lm_model": "qwen/qwen3-vl-8b",
     "default_game": "The Quinfall",
     "custom_quick": {
         "The Quinfall": []
     },
     "favorites": [
-        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only",
-        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up"
+        "What do you call a fake noodle? An impasta.",
+        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only"
     ],
     "history": [
-        "The vending machine spat out a half-eaten banana that sang in the dark when it was turned off and had zero meaning\u2014because who needs *mean* to forget",
-        "TACOS",
-        "LFG loot grind \u2014 chill pace, no rush, just EXP and loot in open world.",
-        "XP grind at Arachnid Temple, partying, no rush\u2014just loot and level up.",
-        "LFG Loot / XP Grind @ Arachnid Temple in Party Finder \u2014 chill only",
-        "Just got back from the WB\u2014huh, boss level grind? Thought I'd pass on some quiet downtime in the open world this morning.",
-        "Just finished the CZ run\u2014no loot, just vibes. Still got some XP grind in progress at Arachnid Temple. \ud83c\udf00",
-        "CZ done, no loot\u2014just vibes. XP grind at Arachnid Temple still going. \ud83d\udd01",
-        "Essence Refiner? That's a cool upgrade, but I'm still leveling up in the CZ grind\u2014no loot, just vibes.",
-        "Essence Refiner? Nice one, but I'm still grinding through the CZ\u2014no loot, just the vibe of it all.",
-        "I asked the librarian if the library had books on paranoia. She whispered, they're right behind you.",
-        "I respect moths for their commitment to the light even when the light is a mistake",
-        "someone once paid for premium on a rock and I respect the hustle",
-        "why do we park in driveways and drive on parkways who did this",
-        "Join The Defiants | Chill Guild | Leveling, Dungeons, WB, CZ | Zero stress | Sister to THE DEFIANT | Direct path to move up",
-        "It's the sound of a clock ticking in hell for someone who never sleeps but dreams about milk and salt crusts at midnight.",
-        "Sell at 350,000",
-        "?",
-        "LFG Grim Point in Party Finder \u2014 chill only, @ Arachnid Temple.",
-        "Join The Defiants! Casual PvE, dungeons, & world bosses. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!"
+        "I told my kid to be a grown-up... he just wanted a snack! \ud83d\ude04",
+        "What do you call a sleeping bull? A bulldozer.",
+        "[Kentucky Fried Quin] recruiting warm bodies!No Discord,no BS.We help level & dungeons. Noobs welcome! Apply via O. Guild Finder. Att/Def/HP buffs Ch4",
+        "What do you call a fake noodle? An impasta.",
+        "bees have unionized and I support them",
+        "DG rush? That's some flex \u2014 hope you didn't GG on the last one.",
+        "DG rush? Solid pick \u2014 hope you didn't GG on that last boss.",
+        "wb? i'm on a hunt, not a war.",
+        "WB? Nah, I'm just grinding\u2014no war today, just loot and snacks.",
+        "wb? i'm just looting, not warping.",
+        "[Kentucky Fried Quin] recruiting! Got a pulse & no Discord? Perfect. Free dungeon & level help! Newbies welcome. Press O -> Guild Finder & apply!",
+        "[Kentucky Fried Quin] need a crew? Free DG help & leveling! No Discord? Fine. O -> Guild Finder, apply now \u2014 newbs eat free too.",
+        "[Kentucky Fried Quin] Crew needed? Free DG runs & leveling. No Discord? Guild Finder apply \u2014 newbs fed too, no stress.",
+        "[Kentucky Fried Quin] need crew? Free DG runs, no Discord BS. Noobs welcome! Apply via OGF. Att/Def/HP buffs Ch4",
+        "[Kentucky Fried Quin] need crew? Free DG runs, no BS. Noobs safe! Apply via O. Guild Finder. Att/Def/HP buffs Ch4",
+        "[Kentucky Fried Quin] Crew? Free DGs, no fluff. Noobs welcome! Apply via O. Guild Finder. Get Att/Def/HP buffs in Ch4",
+        "[Kentucky Fried Quin] Free DGs, no fluff. Noobs? We got you. Apply via O. Buffs in Ch4 \u2014 come loot with us.",
+        "Why did the squirrel bring a umbrella to school?",
+        "I used to think dogs were just for cuddles, then I found out they're basically tiny furry lawyers who chew your shoes.",
+        "What do you call a bread that's always late?"
     ],
     "copy_counts": {
         "Grind\u2019s a drag till you hit 70, then it\u2019s oh hey, loot again? \ud83d\ude05": 1,
@@ -117,7 +123,32 @@
         "It's the sound of a clock ticking in hell for someone who never sleeps but dreams about milk and salt crusts at midnight.": 1,
         "Sell at 350,000": 1,
         "?": 2,
-        "LFG Grim Point in Party Finder \u2014 chill only, @ Arachnid Temple.": 1
+        "LFG Grim Point in Party Finder \u2014 chill only, @ Arachnid Temple.": 1,
+        "Got a pulse? Join [Kentucky Fried Quin]! No Discord needed. Free leveling & dungeon help, new players welcome. Press O to search & apply!": 1,
+        "[Kentucky Fried Quin] recruiting warm bodies! No Discord, no BS. We help level & do dungeons. Newbies welcome! Apply via O -> Guild Finder.": 1,
+        "if time is money I am paying in monopoly bills": 1,
+        "my soul left and sent a postcard from the snack aisle": 1,
+        "I'm on a seafood diet. I see food and I eat it.": 1,
+        "I told my kid to be a grown-up... he just wanted a snack! \ud83d\ude04": 1,
+        "What do you call a sleeping bull? A bulldozer.": 1,
+        "[Kentucky Fried Quin] recruiting warm bodies!No Discord,no BS.We help level & dungeons. Noobs welcome! Apply via O. Guild Finder. Att/Def/HP buffs Ch4": 1,
+        "What do you call a fake noodle? An impasta.": 1,
+        "bees have unionized and I support them": 2,
+        "DG rush? That's some flex \u2014 hope you didn't GG on the last one.": 1,
+        "DG rush? Solid pick \u2014 hope you didn't GG on that last boss.": 1,
+        "wb? i'm on a hunt, not a war.": 1,
+        "WB? Nah, I'm just grinding\u2014no war today, just loot and snacks.": 1,
+        "wb? i'm just looting, not warping.": 1,
+        "[Kentucky Fried Quin] recruiting! Got a pulse & no Discord? Perfect. Free dungeon & level help! Newbies welcome. Press O -> Guild Finder & apply!": 2,
+        "[Kentucky Fried Quin] need a crew? Free DG help & leveling! No Discord? Fine. O -> Guild Finder, apply now \u2014 newbs eat free too.": 2,
+        "[Kentucky Fried Quin] Crew needed? Free DG runs & leveling. No Discord? Guild Finder apply \u2014 newbs fed too, no stress.": 1,
+        "[Kentucky Fried Quin] need crew? Free DG runs, no Discord BS. Noobs welcome! Apply via OGF. Att/Def/HP buffs Ch4": 3,
+        "[Kentucky Fried Quin] need crew? Free DG runs, no BS. Noobs safe! Apply via O. Guild Finder. Att/Def/HP buffs Ch4": 2,
+        "[Kentucky Fried Quin] Crew? Free DGs, no fluff. Noobs welcome! Apply via O. Guild Finder. Get Att/Def/HP buffs in Ch4": 1,
+        "[Kentucky Fried Quin] Free DGs, no fluff. Noobs? We got you. Apply via O. Buffs in Ch4 \u2014 come loot with us.": 2,
+        "Why did the squirrel bring a umbrella to school?": 1,
+        "I used to think dogs were just for cuddles, then I found out they're basically tiny furry lawyers who chew your shoes.": 1,
+        "What do you call a bread that's always late?": 1
     },
     "hidden_lines": {
         "The Quinfall": [
@@ -125,7 +156,7 @@
             "CZ run? need a couple more, no sweat"
         ]
     },
-    "geometry": "1080x1829+-1301+109",
+    "geometry": "200x200+-1085+-208",
     "hud_geometry": "2560x1009+513+176",
     "hud_mode": false,
     "always_on_top": true,
@@ -133,13 +164,13 @@
     "mood": "Polite",
     "activity": "General Chat",
     "intensity": 1,
-    "noise_level": 4,
+    "noise_level": 2,
     "show_banner": true,
-    "font_scale": "XXL",
+    "font_scale": "L",
     "lfg_target": "EXP / Loot Grind",
     "lfg_need": "Chill only",
     "lfg_defaults": {
-        "The Quinfall": "Grim Point"
+        "The Quinfall": "EXP / Loot Grind"
     },
     "lfg_locations": {},
     "lfg_location_defaults": {
@@ -148,10 +179,10 @@
     "lfg_location": "Arachnid Temple",
     "lfg_party_finder": true,
     "chat_region": {
-        "left": 28,
-        "top": 764,
-        "right": 467,
-        "bottom": 982
+        "left": 2,
+        "top": 845,
+        "right": 471,
+        "bottom": 1006
     },
     "market_region": {
         "left": 111,
@@ -162,7 +193,7 @@
     "economy_item": "",
     "economy_undercut": "5",
     "ocr_prefer_last_line": true,
-    "generator_intent": "reply",
+    "generator_intent": "noise",
     "show_advanced": false,
     "onboarding_done": true,
     "steam_log_enabled": true,
@@ -215,5 +246,51 @@
             "engine": "local VL\u00b7reprice"
         }
     ],
-    "flip_fee": "5"
+    "flip_fee": "5",
+    "game_settings": {
+        "The Quinfall": {
+            "chat_region": {
+                "left": 2,
+                "top": 845,
+                "right": 471,
+                "bottom": 1006
+            },
+            "market_region": {
+                "left": 111,
+                "top": 61,
+                "right": 1628,
+                "bottom": 1047
+            },
+            "economy_undercut": "5",
+            "flip_fee": "5",
+            "activity": "General Chat",
+            "mood": "Polite",
+            "intensity": 1,
+            "noise_level": 2,
+            "lfg_need": "Chill only",
+            "lfg_party_finder": true,
+            "ocr_prefer_last_line": true,
+            "macros": [
+                "Sell at 1,450,000",
+                "",
+                ""
+            ],
+            "lfg_location": "Arachnid Temple",
+            "steam_appid": 2294660,
+            "lfg_target": "EXP / Loot Grind",
+            "economy_item": ""
+        },
+        "World of Warcraft": {
+            "steam_appid": null
+        },
+        "Albion Online": {
+            "steam_appid": 761890
+        },
+        "Guild Wars 2": {
+            "steam_appid": 1284210
+        },
+        "Custom Short": {
+            "steam_appid": null
+        }
+    }
 }

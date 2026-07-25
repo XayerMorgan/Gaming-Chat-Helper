@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "selected_id": "r19f9752f4f91489",
+  "templates": [
+    {
+      "id": "r19f87b201ec2252",
+      "name": "Got a pulse",
+      "text": "Got a pulse? Join [Kentucky Fried Quin]! No Discord needed. Free leveling & dungeon help, new players welcome. Press O to search & apply!"
+    },
+    {
+      "id": "r19f87c9752e4286",
+      "name": "KFQ1",
+      "text": "[Kentucky Fried Quin] recruiting! Got a pulse & no Discord? Perfect. Free dungeon & level help! Newbies welcome. Press O -> Guild Finder & apply!"
+    },
+    {
+      "id": "r19f87ca2d003160",
+      "name": "KFQ2",
+      "text": "[Kentucky Fried Quin] recruiting warm bodies!No Discord,no BS.We help level & dungeons. Noobs welcome! Apply via O. Guild Finder. Att/Def/HP buffs Ch4"
+    },
+    {
+      "id": "r19f87e3ce905587",
+      "name": "Welcome",
+      "text": "We run 8 - 11 US Central Time during the week. We are near Pabas which is close to Arachnid Temple Group for farming."
+    },
+    {
+      "id": "r19f974d8e172874",
+      "name": "KFQ2 · variant",
+      "text": "[Kentucky Fried Quin] need crew? Free DG runs, no BS. Noobs safe! Apply via O. Guild Finder. Att/Def/HP buffs Ch4"
+    },
+    {
+      "id": "r19f9752caa55322",
+      "name": "KFQ2 · variant · variant",
+      "text": "[Kentucky Fried Quin] Crew? Free DGs, no fluff. Noobs welcome! Apply via O. Guild Finder. Get Att/Def/HP buffs in Ch4"
+    },
+    {
+      "id": "r19f9752f4f91489",
+      "name": "KFQ2 · variant · variant · variant",
+      "text": "[Kentucky Fried Quin] Free DGs, no fluff. Noobs? We got you. Apply via O. Buffs in Ch4 — come loot with us."
+    }
+  ]
+}

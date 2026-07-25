@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import random
+import re
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+from collections import Counter
 from tkinter import messagebox
-from typing import Callable, Optional
+from typing import Callable, Match, Optional
 
 import customtkinter as ctk
 import pyperclip
@@ -75,7 +78,12 @@ if _HAS_TESS:
 # ---------------------------------------------------------------------------
 # Version / paths
 # ---------------------------------------------------------------------------
-APP_VERSION = "6.4"
+APP_VERSION = "6.5"
+
+# LM Studio (OpenAI-compatible local server defaults)
+LM_DEFAULT_LOCAL_HOST = "127.0.0.1:1234"
+LM_DEFAULT_PORT = "1234"
+LM_MODE_OPTIONS = ("Local", "Remote")
 
 # Intent-driven generator (single surface; not separate tool tabs)
 INTENT_OPTIONS = ("lfg", "activity", "reply", "recruit", "noise")
@@ -134,6 +142,8 @@ ECONOMY_LOG_PATH = os.path.join(APP_DIR, "economy_price_log.jsonl")
 SESSION_EXPORT_PATH = os.path.join(APP_DIR, "session_export.txt")
 HELP_MANUAL_PATH = os.path.join(APP_DIR, "HELP_MANUAL.md")
 FEATURES_PATH = os.path.join(APP_DIR, "FEATURES.md")
+RECRUIT_TEMPLATES_PATH = os.path.join(APP_DIR, "recruit_templates.json")
+RECRUIT_PLACEHOLDER = "(type a guild pitch below)"
 MACROS_MAX = 3
 
 # ---------------------------------------------------------------------------
@@ -264,18 +274,42 @@ GAME_PROFILES = {
         "accent": "#7c6cff",
         "steam_appid": 2294660,
         "vibe": (
-            "The Quinfall is an open-world MMO. Most chat is short, practical gamer talk: "
-            "grinding, loot, hanging out, guild vibes, light banter. "
-            "Do NOT invent or force system acronyms. Only use specific content terms if the user selected them."
+            "The Quinfall is an open-world MMO. Chat is short and practical: grinding, loot, "
+            "dungeons (DG), world bosses (WB), combat zones (CZ), guild vibes, light banter. "
+            "Players use heavy shorthand — always decode it correctly."
         ),
-        # General chat vocabulary — NO WB/CZ (those only appear when user picks that LFG content)
+        # General chat flavor words (not the acronym map — see vocab)
         "terms": [
             "grind", "loot", "XP", "party", "LFG", "guild", "chill", "gg", "mats",
+            "DG", "WB", "CZ", "TP",
         ],
+        # Canonical shorthand → meaning (used by vocabulary normalizer + AI prompts)
+        "vocab": {
+            "DG": "Dungeon (instanced dungeon run)",
+            "DGs": "Dungeons",
+            "DUNG": "Dungeon",
+            "WB": "World Boss",
+            "CZ": "Combat Zone",
+            "LFG": "Looking For Group",
+            "LFM": "Looking For More (need players)",
+            "LF": "Looking For",
+            "WTS": "Want To Sell",
+            "WTB": "Want To Buy",
+            "WTT": "Want To Trade",
+            "TP": "Teleport (travel cost / TP fee — not Trading Post)",
+            "XP": "Experience / leveling",
+            "EXP": "Experience / leveling",
+            "MATS": "Crafting materials",
+            "PF": "Party Finder",
+            "PST": "Please Send Tell / whisper me",
+            "INV": "Invite",
+        },
         "avoid": (
             "Do NOT invent other MMOs' systems (mythic+, fractals, black zones, ilvl, etc.). "
-            "Do NOT say WB, world boss, CZ, or combat zone unless the player explicitly chose that content. "
-            "Prefer plain gamer language over wrong/forced Quinfall jargon."
+            "ALWAYS understand Quinfall shorthand when reading chat: DG=Dungeon, WB=World Boss, "
+            "CZ=Combat Zone, TP=Teleport cost. "
+            "When YOU write an LFG: only use WB/CZ if that content was selected; DG is valid for Dungeon. "
+            "Prefer natural Quinfall player language over wrong cross-game jargon."
         ),
         "activities": [
             "General Chat", "Leveling / Grind", "Dungeon", "Trading",
@@ -300,7 +334,7 @@ GAME_PROFILES = {
                 "must_name": "grind, EXP, XP, leveling, or loot",
                 "aliases": ["grind", "exp", "xp", "level", "loot"],
                 "brief": "EXP / loot grind — use Location for the farm spot; do NOT say WB or CZ",
-                "never": ["world boss", "WB", "CZ", "combat zone", "recruiting", "mythic+"],
+                "never": ["world boss", "WB", "CZ", "combat zone", "recruiting", "mythic+", "DG"],
                 "samples": [
                     "LFG Loot / XP Grind @ Cemetery",
                     "LFG XP grind @ Arachnid Temple",
@@ -308,39 +342,42 @@ GAME_PROFILES = {
                 ],
             },
             "Dungeon": {
-                "must_name": "dungeon",
-                "aliases": ["dungeon", "dung", "instance"],
+                "must_name": "dungeon, DG, or the dungeon location name",
+                "aliases": ["dungeon", "dung", "dg", "dgs", "instance"],
                 "brief": (
-                    "dungeon clear / party — ALWAYS name the selected Location "
-                    "(that is the dungeon: Foaming Catacombs, Deepest Maze, Quiet Chambers, or Grim Point)"
+                    "dungeon clear / party — players often write DG for dungeon. "
+                    "ALWAYS name the selected Location "
+                    "(Foaming Catacombs, Deepest Maze, Quiet Chambers, or Grim Point). "
+                    "Valid forms: LFG DG @ Grim Point · LFG Dungeon @ … · LFG Grim Point"
                 ),
                 "never": ["world boss", "WB", "CZ", "combat zone", "mythic+"],
                 "samples": [
-                    "LFG Dungeon @ Foaming Catacombs — chill clear, need 1 more",
+                    "LFG DG @ Foaming Catacombs — chill clear, need 1 more",
                     "LFG Dungeon @ Deepest Maze — looking for a couple",
-                    "LFM Quiet Chambers dungeon, all welcome",
+                    "LFM Quiet Chambers DG, all welcome",
                     "LFG Grim Point — need 1 more",
+                    "LFG DG Grim Point in Party Finder — chill only",
                 ],
             },
             "World Boss": {
                 "must_name": "world boss or WB",
                 "aliases": ["world boss", "WB", "wb"],
-                "brief": "world boss group — ONLY when user selected World Boss",
-                "never": ["dungeon clear", "mythic+", "CZ", "combat zone"],
+                "brief": "world boss group — players almost always write WB. ONLY when user selected World Boss",
+                "never": ["dungeon clear", "DG", "mythic+", "CZ", "combat zone"],
                 "samples": [
-                    "LFG world boss when up — chill group",
-                    "World boss soon? need a few more",
+                    "LFG WB when up — chill group",
+                    "WB soon? need a few more",
                     "WB group forming, hop in if free",
                 ],
             },
             "Combat Zone": {
                 "must_name": "combat zone or CZ",
                 "aliases": ["cz", "combat zone"],
-                "brief": "combat zone group — ONLY when user selected Combat Zone",
-                "never": ["world boss", "WB", "mythic+"],
+                "brief": "combat zone group — players write CZ. ONLY when user selected Combat Zone",
+                "never": ["world boss", "WB", "DG", "mythic+"],
                 "samples": [
-                    "LFG combat zone — need a couple more",
-                    "Anyone for combat zone, chill",
+                    "LFG CZ — need a couple more",
+                    "Anyone for CZ, chill",
                     "CZ run? looking for a few",
                 ],
             },
@@ -387,7 +424,22 @@ GAME_PROFILES = {
             "LFG", "LFM", "M+", "mythic+", "raid", "ilvl", "WQs", "mount",
             "transmog", "AH", "whisper", "guild", "boost", "keys",
         ],
-        "avoid": "Do not invent Quinfall/Albion-specific systems. Stay WoW-native.",
+        "vocab": {
+            "M+": "Mythic+ dungeon key",
+            "MYTHIC+": "Mythic+ dungeon key",
+            "LFG": "Looking For Group",
+            "LFM": "Looking For More",
+            "ILVL": "Item level",
+            "WQ": "World Quest",
+            "WQS": "World Quests",
+            "AH": "Auction House",
+            "PST": "Please Send Tell / whisper",
+            "BG": "Battleground",
+            "WB": "World Boss",
+            "INV": "Invite",
+            "BIS": "Best in slot",
+        },
+        "avoid": "Do not invent Quinfall/Albion-specific systems. Stay WoW-native. Decode M+/ilvl/WQ correctly.",
         "activities": [
             "General / Trade", "Dungeon / M+", "Raid", "World Content",
             "PvP", "Guild Chat", "Recruiting", "AH / Crafting",
@@ -458,7 +510,20 @@ GAME_PROFILES = {
             "BZ", "black zone", "RZ", "gank", "set", "IP", "spec", "craft",
             "refine", "hideout", "content", "rat", "loot", "party",
         ],
-        "avoid": "No WoW raid/M+ talk. Stay Albion risk/reward language.",
+        "vocab": {
+            "BZ": "Black Zone (full-loot open world)",
+            "RZ": "Red Zone",
+            "YZ": "Yellow Zone",
+            "IP": "Item Power",
+            "GVG": "Guild vs Guild",
+            "ZVZ": "Zerg vs Zerg",
+            "LFG": "Looking For Group",
+            "LFM": "Looking For More",
+            "WTS": "Want To Sell",
+            "WTB": "Want To Buy",
+            "INV": "Invite",
+        },
+        "avoid": "No WoW raid/M+ talk. Stay Albion risk/reward language. Decode BZ/IP/ZvZ correctly.",
         "activities": [
             "City Chat", "Black Zone", "Roaming", "Crafting / Market",
             "GvG / ZvZ", "Guild Chat", "Recruiting", "Fame Farm",
@@ -528,7 +593,17 @@ GAME_PROFILES = {
             "meta", "tag", "commander", "fractals", "strike", "raid", "WvW",
             "map complete", "mount", "legendary", "LFG", "squad",
         ],
-        "avoid": "Avoid other-MMO systems. Use GW2 event/meta language.",
+        "vocab": {
+            "WVW": "World vs World",
+            "LFG": "Looking For Group",
+            "LFM": "Looking For More",
+            "CM": "Challenge Mode",
+            "META": "Map meta event / train",
+            "TAG": "Commander tag / squad lead",
+            "INV": "Invite",
+            "WP": "Waypoint",
+        },
+        "avoid": "Avoid other-MMO systems. Use GW2 event/meta language. Decode WvW/CM/meta correctly.",
         "activities": [
             "Map / Open World", "Meta Event", "Fractals / Strikes",
             "Raid", "WvW", "Guild Chat", "Recruiting", "Crafting",
@@ -592,6 +667,14 @@ GAME_PROFILES = {
         "steam_appid": None,
         "vibe": "Generic multiplayer chat with a tight character budget. Ultra short, clear, fun.",
         "terms": ["LFG", "gg", "party", "group", "chill", "loot"],
+        "vocab": {
+            "LFG": "Looking For Group",
+            "LFM": "Looking For More",
+            "WTS": "Want To Sell",
+            "WTB": "Want To Buy",
+            "GG": "Good game",
+            "INV": "Invite",
+        },
         "avoid": "No long paragraphs. Prefer punchy one-liners.",
         "activities": ["General", "LFG", "Trade", "Guild", "Banter"],
         "lfg_default": "Group",
@@ -632,12 +715,9 @@ LFG_NEED_HINTS = {
     "Chill only": "stress free, casual pace — still name the content",
 }
 
-DEFAULT_TEMPLATES = [
-    "Join The Defiants | Chill Guild | Leveling, Dungeons, Grind | Zero stress | Sister to THE DEFIANT | Direct path to move up",
-    "Join The Defiants! Casual PvE, dungeons, & open-world grind. Chill vibes. Sister guild to THE DEFIANT. Discord req. Apply in menu!",
-    "Looking for a relaxed home? [Defiants] is recruiting casual PvE players. Group up at your own pace. PST for info!",
-    "Join The Defiants | Chill Guild | Leveling, Dungeons, Grind | Zero stress | Sister Clan to THE DEFIANT | Direct path to move up",
-]
+# Stock recruit presets — left empty so users write their own guild pitch.
+# (Previously shipped with sample "Defiants" lines; those are no longer defaults.)
+DEFAULT_TEMPLATES: list[str] = []
 
 MOOD_OPTIONS = [
     "Dignified", "Polite", "Casual Gamer", "Witty/Sarcastic", "Hype/Energetic",
@@ -678,15 +758,22 @@ JOB_LLM = {
         "repeat_penalty": 1.05, "frequency_penalty": 0.10, "presence_penalty": 0.0,
         "max_tokens": 90, "use_mood": False, "use_terms": True,
     },
+    # Fresh wording of an existing pitch (higher novelty; same facts)
+    "recruit_variant": {
+        "temperature": 0.88, "top_p": 0.93, "top_k": 50, "min_p": 0.04,
+        "repeat_penalty": 1.14, "frequency_penalty": 0.28, "presence_penalty": 0.12,
+        "max_tokens": 100, "use_mood": True, "use_terms": True,
+    },
+    # Replies: cooler sampling = more human, less tryhard / superlative
     "comeback": {
-        "temperature": 0.85, "top_p": 0.92, "top_k": 50, "min_p": 0.05,
-        "repeat_penalty": 1.10, "frequency_penalty": 0.20, "presence_penalty": 0.10,
-        "max_tokens": 70, "use_mood": True, "use_terms": False,
+        "temperature": 0.58, "top_p": 0.86, "top_k": 32, "min_p": 0.08,
+        "repeat_penalty": 1.08, "frequency_penalty": 0.12, "presence_penalty": 0.04,
+        "max_tokens": 48, "use_mood": True, "use_terms": False,
     },
     "triple": {
-        "temperature": 0.95, "top_p": 0.94, "top_k": 50, "min_p": 0.04,
-        "repeat_penalty": 1.12, "frequency_penalty": 0.25, "presence_penalty": 0.15,
-        "max_tokens": 160, "use_mood": True, "use_terms": False,
+        "temperature": 0.72, "top_p": 0.90, "top_k": 40, "min_p": 0.06,
+        "repeat_penalty": 1.10, "frequency_penalty": 0.18, "presence_penalty": 0.08,
+        "max_tokens": 140, "use_mood": True, "use_terms": False,
     },
     "banter": {
         "temperature": 0.90, "top_p": 0.92, "top_k": 50, "min_p": 0.05,
@@ -720,16 +807,38 @@ JOB_LLM = {
         "repeat_penalty": 1.05, "frequency_penalty": 0.05, "presence_penalty": 0.0,
         "max_tokens": 420, "use_mood": False, "use_terms": False,
     },
-    # Clean dad jokes only — always family-safe, hard cap 150
+    # Clean dad jokes — room for full setup + punchline (models were truncating)
     "dadjoke": {
-        "temperature": 0.95, "top_p": 0.92, "top_k": 50, "min_p": 0.05,
-        "repeat_penalty": 1.12, "frequency_penalty": 0.25, "presence_penalty": 0.15,
-        "max_tokens": 80, "use_mood": False, "use_terms": False,
+        "temperature": 0.92, "top_p": 0.93, "top_k": 50, "min_p": 0.05,
+        "repeat_penalty": 1.12, "frequency_penalty": 0.25, "presence_penalty": 0.12,
+        "max_tokens": 160, "use_mood": False, "use_terms": False,
     },
 }
 
 # Hard cap for dad jokes (independent of game limit when tighter)
 DAD_JOKE_LIMIT = 150
+
+# Classic structures the model should imitate (rotated into the user prompt)
+DAD_JOKE_PATTERNS = (
+    "setup → short punchline (one beat)",
+    "What do you call … ? / Why did the … ?",
+    "I used to … then … (pun twist)",
+    "anti-joke / underwhelming literal answer",
+    "wordplay on a common object (food, job, animal)",
+    "two-sentence: statement, then the groan",
+    "I'm not saying … I'm just saying …",
+    "dad correction / wise-guy reframe of a simple fact",
+)
+
+# Words that make replies sound like a bot / hype account — soft-reject
+REPLY_HYPE_MARKERS = (
+    "legendary", "absolutely", "insanely", "goated", "goat", "king", "queen",
+    "slaps", "crushed it", "fire emoji", "🔥", "amazing", "incredible",
+    "unbelievable", "phenomenal", "spectacular", "masterpiece", "iconic",
+    "best ever", "literally perfect", "so proud of you", "main character",
+    "ate and left", "no cap", "periodt", "slay", "queen energy", "huge W",
+    "massive W", "absolute unit", "chef's kiss", "living legend",
+)
 
 # Clean dad jokes only — family-safe, under 150 chars (offline pack).
 DAD_JOKES = [
@@ -967,6 +1076,45 @@ def game_slug(name: str) -> str:
     return name.lower().replace(" ", "_").replace("/", "_")
 
 
+def _valid_region_dict(raw) -> Optional[dict]:
+    """Normalize a screen region dict or return None."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        if not all(k in raw for k in ("left", "top", "right", "bottom")):
+            return None
+        return {
+            "left": int(raw["left"]),
+            "top": int(raw["top"]),
+            "right": int(raw["right"]),
+            "bottom": int(raw["bottom"]),
+        }
+    except Exception:
+        return None
+
+
+# Keys stored per game under config["game_settings"][game_name]
+GAME_SETTING_KEYS = (
+    "chat_region",
+    "market_region",
+    "activity",
+    "lfg_target",
+    "lfg_location",
+    "lfg_need",
+    "lfg_party_finder",
+    "economy_item",
+    "economy_undercut",
+    "flip_fee",
+    "macros",
+    "ocr_prefer_last_line",
+    "mood",
+    "intensity",
+    "noise_level",
+    # Optional override; None = use GAME_PROFILES steam_appid (incl. non-Steam)
+    "steam_appid",
+)
+
+
 class HoverTip:
     """Simple delayed tooltip for CTk/Tk widgets (hover help)."""
 
@@ -1188,6 +1336,11 @@ class GamersChatHelper:
         self.assets = AssetBank(ASSETS_DIR)
         self.show_banner = bool(getattr(self, "saved_show_banner", True))
         self._ui_ready = False
+        # Threads must not touch Tk after mainloop ends / window closes
+        self._alive = True
+        # Thread-safe UI marshal: workers put callables here; main thread drains via after()
+        self._ui_queue: queue.Queue = queue.Queue()
+        self._ui_pump_started = False
         self._llm_pulse_gen = 0
         self._llm_online = None  # None=unknown, True/False from probe
         self._steam_pulse_gen = 0
@@ -1195,6 +1348,11 @@ class GamersChatHelper:
         self._steam_player_count: Optional[int] = None
         self._steam_last_log_ts: dict[int, float] = {}  # appid -> unix when last written
         self._steam_history: list[tuple[float, int]] = []  # (unix, players) for current game chart
+        # Recruit pitches live in recruit_templates.json (create / edit / delete)
+        if not hasattr(self, "recruit_templates"):
+            self.recruit_templates: list[dict] = []
+        if not hasattr(self, "_recruit_selected_id"):
+            self._recruit_selected_id: Optional[str] = None
         self.steam_log_enabled = tk.BooleanVar(value=bool(getattr(self, "saved_steam_log_enabled", True)))
         self.steam_log_minutes = tk.IntVar(value=int(getattr(self, "saved_steam_log_minutes", 15)))
         _reg = str(getattr(self, "saved_steam_region_focus", "All") or "All")
@@ -1203,6 +1361,12 @@ class GamersChatHelper:
         self.steam_region_focus = tk.StringVar(value=_reg)
 
         self.game_var = tk.StringVar(value=self.default_game)
+        self.lm_mode_var = tk.StringVar(value=getattr(self, "lm_mode", "Local") or "Local")
+        self.lm_host_var = tk.StringVar(
+            value=getattr(self, "lm_host", LM_DEFAULT_LOCAL_HOST) or LM_DEFAULT_LOCAL_HOST
+        )
+        self.lm_api_key_var = tk.StringVar(value=getattr(self, "lm_api_key", "") or "")
+        self.lm_model_var = tk.StringVar(value=getattr(self, "lm_model", "") or "")
         self.mood_var = tk.StringVar(value=self.saved_mood)
         self.activity_var = tk.StringVar(value=self.saved_activity)
         self.intensity_var = tk.IntVar(value=self.saved_intensity)
@@ -1289,6 +1453,12 @@ class GamersChatHelper:
         self.on_game_changed(self.game_var.get(), persist=False)
         self.sync_activity_if_needed()
         self.sync_lfg_target_if_needed()
+        # Write migrated multi-game bags + active snapshot (no status toast)
+        try:
+            self._snapshot_game_settings(self.game_var.get())
+            self.save_settings()
+        except Exception:
+            pass
         self.pulse_llm_status()
         self.pulse_steam_players()
         self.refresh_history_ui()
@@ -1312,6 +1482,7 @@ class GamersChatHelper:
         self.root.bind("<F1>", lambda e: self.open_context_help())
         self.root.bind("<KeyPress-F1>", lambda e: self.open_context_help())
         self.root.after(200, self._cache_hwnd)
+        self._start_ui_queue_pump()
 
     # =====================================================================
     # Config
@@ -1319,9 +1490,16 @@ class GamersChatHelper:
     def load_settings(self):
         self.game_limits = {g: p["limit"] for g, p in GAME_PROFILES.items()}
         self.templates = list(DEFAULT_TEMPLATES)
+        self.recruit_templates: list[dict] = []
+        self._recruit_selected_id: Optional[str] = None
         # Prefer 127.0.0.1 — on Windows, "localhost" often tries IPv6 (::1) first and
         # times out the status probe even when LM Studio is healthy on IPv4.
-        self.api_url = "http://127.0.0.1:1234/v1/chat/completions"
+        self.api_url = f"http://{LM_DEFAULT_LOCAL_HOST}/v1/chat/completions"
+        self.lm_mode = "Local"  # Local | Remote
+        self.lm_host = LM_DEFAULT_LOCAL_HOST
+        self.lm_api_key = ""
+        self.lm_model = ""  # empty → use first loaded model from /v1/models
+        self._lm_models_cache: list[str] = []
         self.default_game = "The Quinfall"
         self.custom_quick: dict[str, list[str]] = {}
         self.saved_favorites: list[str] = []
@@ -1358,16 +1536,39 @@ class GamersChatHelper:
         self.saved_show_advanced = False
         self.saved_onboarding_done = False
         self.saved_house_styles: dict[str, str] = {}
+        # Per-game bags (chat/market regions, LFG, economy, macros, …)
+        self.game_settings: dict[str, dict] = {}
+        self._active_game_for_settings: Optional[str] = None
 
         if os.path.exists(CONFIG_PATH):
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.game_limits.update(data.get("limits", {}))
+                # Flat list kept in sync with recruit_templates.json (legacy config key)
                 self.templates = data.get("templates", self.templates) or list(DEFAULT_TEMPLATES)
                 self.api_url = self._normalize_api_url(
                     data.get("api_url", self.api_url) or self.api_url
                 )
+                mode_raw = str(data.get("lm_mode", "") or "").strip()
+                if mode_raw.lower() == "remote":
+                    self.lm_mode = "Remote"
+                elif mode_raw.lower() == "local":
+                    self.lm_mode = "Local"
+                else:
+                    # Infer from saved URL if mode not set yet
+                    host_guess = self._host_from_api_url(self.api_url)
+                    self.lm_mode = (
+                        "Local"
+                        if host_guess.startswith("127.0.0.1") or "localhost" in host_guess.lower()
+                        else "Remote"
+                    )
+                host_saved = str(data.get("lm_host", "") or "").strip()
+                self.lm_host = host_saved or self._host_from_api_url(self.api_url) or LM_DEFAULT_LOCAL_HOST
+                self.lm_api_key = str(data.get("lm_api_key", "") or "")
+                self.lm_model = str(data.get("lm_model", "") or "").strip()
+                # Keep api_url aligned with host/mode
+                self.api_url = self._api_url_from_host(self.lm_host)
                 self.default_game = data.get("default_game", self.default_game)
                 self.custom_quick = data.get("custom_quick", {})
                 self.saved_favorites = data.get("favorites", [])
@@ -1397,22 +1598,12 @@ class GamersChatHelper:
                 self.saved_lfg_location_defaults = data.get("lfg_location_defaults", {}) or {}
                 self.saved_lfg_location = data.get("lfg_location", self.saved_lfg_location)
                 self.saved_lfg_party_finder = bool(data.get("lfg_party_finder", True))
-                cr = data.get("chat_region")
-                if isinstance(cr, dict) and all(k in cr for k in ("left", "top", "right", "bottom")):
-                    self.saved_chat_region = {
-                        "left": int(cr["left"]),
-                        "top": int(cr["top"]),
-                        "right": int(cr["right"]),
-                        "bottom": int(cr["bottom"]),
-                    }
-                mr = data.get("market_region")
-                if isinstance(mr, dict) and all(k in mr for k in ("left", "top", "right", "bottom")):
-                    self.saved_market_region = {
-                        "left": int(mr["left"]),
-                        "top": int(mr["top"]),
-                        "right": int(mr["right"]),
-                        "bottom": int(mr["bottom"]),
-                    }
+                cr = _valid_region_dict(data.get("chat_region"))
+                if cr:
+                    self.saved_chat_region = cr
+                mr = _valid_region_dict(data.get("market_region"))
+                if mr:
+                    self.saved_market_region = mr
                 self.saved_economy_item = str(data.get("economy_item", "") or "")[:120]
                 self.saved_economy_undercut = str(data.get("economy_undercut", "5") or "5")[:8]
                 self.saved_ocr_prefer_last = bool(data.get("ocr_prefer_last_line", True))
@@ -1449,10 +1640,30 @@ class GamersChatHelper:
                     self.saved_house_styles = {
                         str(k): str(v)[:500] for k, v in hs.items() if str(v).strip()
                     }
+                # Per-game settings bags (Steam + non-Steam)
+                gs = data.get("game_settings") or {}
+                if isinstance(gs, dict):
+                    cleaned: dict[str, dict] = {}
+                    for gname, bag in gs.items():
+                        if not isinstance(bag, dict):
+                            continue
+                        gkey = str(gname)
+                        if gkey not in GAME_PROFILES:
+                            # Keep unknown games so custom profiles aren't lost
+                            cleaned[gkey] = dict(bag)
+                        else:
+                            cleaned[gkey] = dict(bag)
+                    self.game_settings = cleaned
                 if self.default_game not in GAME_PROFILES:
                     self.default_game = "The Quinfall"
             except Exception:
                 pass
+
+        # Fold legacy single-slot fields into per-game bags (one-time migration)
+        self._migrate_legacy_into_game_settings()
+
+        # Recruit statements: prefer local recruit_templates.json (migrate from config once)
+        self._load_or_migrate_recruit_templates()
 
     def save_settings(self):
         try:
@@ -1464,10 +1675,39 @@ class GamersChatHelper:
         except Exception:
             pass
 
+        # Keep flat list in config as a backup mirror of the local recruit file
+        self._sync_templates_flat()
+
+        # Keep api_url derived from LM host so chat/OCR use the same endpoint
+        try:
+            self._sync_api_url_from_ui(save=False)
+        except Exception:
+            pass
+
         data = {
             "limits": self.game_limits,
             "templates": self.templates,
             "api_url": self.api_url,
+            "lm_mode": (
+                self.lm_mode_var.get()
+                if hasattr(self, "lm_mode_var")
+                else getattr(self, "lm_mode", "Local")
+            ),
+            "lm_host": (
+                (self.lm_host_var.get() or "").strip()
+                if hasattr(self, "lm_host_var")
+                else getattr(self, "lm_host", LM_DEFAULT_LOCAL_HOST)
+            ),
+            "lm_api_key": (
+                (self.lm_api_key_var.get() or "").strip()
+                if hasattr(self, "lm_api_key_var")
+                else getattr(self, "lm_api_key", "")
+            ),
+            "lm_model": (
+                (self.lm_model_var.get() or "").strip()
+                if hasattr(self, "lm_model_var")
+                else getattr(self, "lm_model", "")
+            ),
             "default_game": self.game_var.get() if hasattr(self, "game_var") else self.default_game,
             "custom_quick": self.custom_quick,
             "favorites": getattr(self, "favorites", self.saved_favorites),
@@ -1506,6 +1746,7 @@ class GamersChatHelper:
                 if hasattr(self, "lfg_party_finder")
                 else self.saved_lfg_party_finder
             ),
+            # Legacy single-slot fields stay filled from the *active* game for older builds
             "chat_region": getattr(self, "chat_region", self.saved_chat_region),
             "market_region": getattr(self, "market_region", self.saved_market_region),
             "economy_item": (
@@ -1569,6 +1810,8 @@ class GamersChatHelper:
                 if hasattr(self, "flip_fee_var")
                 else getattr(self, "saved_flip_fee", "5")
             ),
+            # Canonical multi-game store (Steam + non-Steam)
+            "game_settings": self._game_settings_for_save(),
         }
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
@@ -1595,6 +1838,322 @@ class GamersChatHelper:
         game = game or (self.game_var.get() if hasattr(self, "game_var") else "")
         styles = getattr(self, "house_styles", None) or getattr(self, "saved_house_styles", {}) or {}
         return str(styles.get(game, "") or "").strip()[:500]
+
+    # ------------------------------------------------------------------
+    # Per-game configuration (Steam + non-Steam)
+    # ------------------------------------------------------------------
+    def _migrate_legacy_into_game_settings(self):
+        """
+        One-time fold of flat chat_region / market_region / economy / macros
+        into game_settings[default_game] so multi-game switching works.
+        Existing per-game bags win; legacy fills only missing keys.
+        """
+        if not isinstance(getattr(self, "game_settings", None), dict):
+            self.game_settings = {}
+
+        # Ensure every known profile has a bag
+        for gname in GAME_PROFILES:
+            self.game_settings.setdefault(gname, {})
+
+        active = getattr(self, "default_game", None) or "The Quinfall"
+        bag = dict(self.game_settings.get(active) or {})
+
+        def _set_if_missing(key, value):
+            if value is None or value == "" or value == []:
+                return
+            if key not in bag or bag.get(key) in (None, "", {}, []):
+                bag[key] = value
+
+        _set_if_missing("chat_region", getattr(self, "saved_chat_region", None))
+        _set_if_missing("market_region", getattr(self, "saved_market_region", None))
+        _set_if_missing("economy_item", getattr(self, "saved_economy_item", ""))
+        _set_if_missing("economy_undercut", getattr(self, "saved_economy_undercut", "5"))
+        _set_if_missing("flip_fee", getattr(self, "saved_flip_fee", "5"))
+        _set_if_missing("activity", getattr(self, "saved_activity", None))
+        _set_if_missing("mood", getattr(self, "saved_mood", None))
+        _set_if_missing("intensity", getattr(self, "saved_intensity", None))
+        _set_if_missing("noise_level", getattr(self, "saved_noise_level", None))
+        _set_if_missing("lfg_need", getattr(self, "saved_lfg_need", None))
+        _set_if_missing("lfg_party_finder", getattr(self, "saved_lfg_party_finder", None))
+        _set_if_missing("ocr_prefer_last_line", getattr(self, "saved_ocr_prefer_last", None))
+        macros = getattr(self, "saved_macros", None)
+        if macros:
+            _set_if_missing("macros", list(macros)[:MACROS_MAX])
+
+        # Align with existing lfg_defaults / location_defaults maps
+        ld = getattr(self, "saved_lfg_defaults", {}) or {}
+        lld = getattr(self, "saved_lfg_location_defaults", {}) or {}
+        for gname in GAME_PROFILES:
+            gbag = dict(self.game_settings.get(gname) or {})
+            if gname == active:
+                gbag.update({k: v for k, v in bag.items() if v is not None})
+            if gname in ld and not gbag.get("lfg_target"):
+                # Only accept real content targets, not locations (legacy mistake)
+                cand = str(ld.get(gname) or "")
+                if cand in (GAME_PROFILES.get(gname) or {}).get("lfg_targets", {}):
+                    gbag["lfg_target"] = cand
+            if gname in lld and not gbag.get("lfg_location"):
+                gbag["lfg_location"] = str(lld.get(gname) or "")
+            # Seed steam_appid from profile if unset (None means non-Steam)
+            if "steam_appid" not in gbag:
+                gbag["steam_appid"] = (GAME_PROFILES.get(gname) or {}).get("steam_appid")
+            self.game_settings[gname] = gbag
+
+    def _snapshot_game_settings(self, game: Optional[str] = None) -> dict:
+        """Capture live UI state into game_settings[game]."""
+        game = game or (
+            self.game_var.get() if hasattr(self, "game_var")
+            else getattr(self, "default_game", "The Quinfall")
+        )
+        if not game:
+            return {}
+        if not isinstance(getattr(self, "game_settings", None), dict):
+            self.game_settings = {}
+        bag = dict(self.game_settings.get(game) or {})
+
+        # Regions
+        cr = _valid_region_dict(getattr(self, "chat_region", None))
+        if cr is not None:
+            bag["chat_region"] = cr
+        mr = _valid_region_dict(getattr(self, "market_region", None))
+        if mr is not None:
+            bag["market_region"] = mr
+        elif hasattr(self, "market_region") and self.market_region is None:
+            bag["market_region"] = None
+
+        if hasattr(self, "activity_var"):
+            bag["activity"] = self.activity_var.get()
+        if hasattr(self, "mood_var"):
+            bag["mood"] = self.mood_var.get()
+        if hasattr(self, "intensity_var"):
+            try:
+                bag["intensity"] = int(self.intensity_var.get())
+            except Exception:
+                pass
+        if hasattr(self, "noise_level_var"):
+            try:
+                bag["noise_level"] = int(self.noise_level_var.get())
+            except Exception:
+                pass
+        if hasattr(self, "lfg_target_var"):
+            bag["lfg_target"] = self.lfg_target_var.get()
+        if hasattr(self, "lfg_location_var"):
+            bag["lfg_location"] = self.lfg_location_var.get()
+        if hasattr(self, "lfg_need_var"):
+            bag["lfg_need"] = self.lfg_need_var.get()
+        if hasattr(self, "lfg_party_finder"):
+            bag["lfg_party_finder"] = bool(self.lfg_party_finder.get())
+        if hasattr(self, "economy_item_var"):
+            bag["economy_item"] = self.economy_item_var.get().strip()[:120]
+        if hasattr(self, "economy_undercut_var"):
+            bag["economy_undercut"] = self.economy_undercut_var.get().strip()[:8]
+        if hasattr(self, "flip_fee_var"):
+            bag["flip_fee"] = self.flip_fee_var.get().strip()[:8]
+        if hasattr(self, "ocr_prefer_last"):
+            bag["ocr_prefer_last_line"] = bool(self.ocr_prefer_last.get())
+        if hasattr(self, "macro_slots"):
+            bag["macros"] = list(self.macro_slots)[:MACROS_MAX]
+
+        # Keep parallel legacy maps in sync
+        if bag.get("lfg_target"):
+            self.lfg_defaults = getattr(self, "lfg_defaults", {}) or {}
+            # Only store real targets
+            if bag["lfg_target"] in self.lfg_target_names(game):
+                self.lfg_defaults[game] = bag["lfg_target"]
+        if bag.get("lfg_location"):
+            self.lfg_location_defaults = getattr(self, "lfg_location_defaults", {}) or {}
+            self.lfg_location_defaults[game] = bag["lfg_location"]
+
+        # Preserve steam_appid override if set; else profile default
+        if "steam_appid" not in bag:
+            bag["steam_appid"] = (GAME_PROFILES.get(game) or {}).get("steam_appid")
+
+        self.game_settings[game] = bag
+        self._active_game_for_settings = game
+        return bag
+
+    def _apply_game_settings(self, game: Optional[str] = None):
+        """Restore UI + runtime state from game_settings[game]."""
+        game = game or (
+            self.game_var.get() if hasattr(self, "game_var")
+            else getattr(self, "default_game", "The Quinfall")
+        )
+        bag = dict((getattr(self, "game_settings", {}) or {}).get(game) or {})
+        prof = GAME_PROFILES.get(game) or GAME_PROFILES.get("The Quinfall") or {}
+
+        # Chat / market capture regions — per game (different UIs)
+        cr = _valid_region_dict(bag.get("chat_region"))
+        self.chat_region = cr
+        mr = _valid_region_dict(bag.get("market_region"))
+        self.market_region = mr
+
+        # Activity
+        acts = list(prof.get("activities") or ["General Chat"])
+        act = str(bag.get("activity") or "")
+        if hasattr(self, "activity_var"):
+            if act not in acts:
+                act = acts[0] if acts else "General Chat"
+            self.activity_var.set(act)
+            if hasattr(self, "activity_menu"):
+                try:
+                    self.activity_menu.configure(values=acts)
+                    self.activity_menu.set(act)
+                except Exception:
+                    pass
+
+        # Mood / heat / noise (remembered per game)
+        if hasattr(self, "mood_var") and bag.get("mood"):
+            mood = str(bag.get("mood"))
+            if mood in MOOD_OPTIONS:
+                self.mood_var.set(mood)
+                if hasattr(self, "mood_menu"):
+                    try:
+                        self.mood_menu.set(mood)
+                    except Exception:
+                        pass
+        if hasattr(self, "intensity_var") and bag.get("intensity") is not None:
+            try:
+                level = int(bag.get("intensity"))
+                level = max(0, min(2, level))
+                self.intensity_var.set(level)
+                if hasattr(self, "heat_slider"):
+                    self.heat_slider.set(level)
+                if hasattr(self, "heat_label"):
+                    self.heat_label.configure(text=INTENSITY_LABELS.get(level, "Normal"))
+            except Exception:
+                pass
+        if hasattr(self, "noise_level_var") and bag.get("noise_level") is not None:
+            try:
+                level = max(0, min(4, int(bag.get("noise_level"))))
+                self.noise_level_var.set(level)
+                if hasattr(self, "noise_level_label"):
+                    self.noise_level_label.configure(
+                        text=NOISE_LEVEL_LABELS.get(level, "Chaos"),
+                        text_color=(
+                            C["success"] if level <= 1
+                            else C["warn"] if level <= 3
+                            else C["danger"]
+                        ),
+                    )
+            except Exception:
+                pass
+
+        # LFG
+        if hasattr(self, "lfg_target_var"):
+            names = self.lfg_target_names(game)
+            if hasattr(self, "lfg_target_menu"):
+                try:
+                    self.lfg_target_menu.configure(values=names)
+                except Exception:
+                    pass
+            preferred = bag.get("lfg_target") or (getattr(self, "lfg_defaults", {}) or {}).get(game)
+            self.lfg_target_var.set(self._resolve_lfg_target(game, preferred))
+        if hasattr(self, "lfg_location_var"):
+            loc_pref = bag.get("lfg_location") or (
+                getattr(self, "lfg_location_defaults", {}) or {}
+            ).get(game)
+            self.lfg_location_var.set(self._resolve_lfg_location(game, loc_pref))
+            try:
+                self.sync_lfg_location_if_needed()
+            except Exception:
+                pass
+        if hasattr(self, "lfg_need_var") and bag.get("lfg_need"):
+            need = str(bag.get("lfg_need"))
+            if need in LFG_NEED_OPTIONS:
+                self.lfg_need_var.set(need)
+                if hasattr(self, "lfg_need_menu"):
+                    try:
+                        self.lfg_need_menu.set(need)
+                    except Exception:
+                        pass
+        if hasattr(self, "lfg_party_finder") and bag.get("lfg_party_finder") is not None:
+            self.lfg_party_finder.set(bool(bag.get("lfg_party_finder")))
+
+        # Economy
+        if hasattr(self, "economy_item_var"):
+            self.economy_item_var.set(str(bag.get("economy_item") or "")[:120])
+        if hasattr(self, "economy_undercut_var"):
+            self.economy_undercut_var.set(str(bag.get("economy_undercut") or "5")[:8])
+        if hasattr(self, "flip_fee_var"):
+            self.flip_fee_var.set(str(bag.get("flip_fee") or "5")[:8])
+
+        # OCR preference
+        if hasattr(self, "ocr_prefer_last") and bag.get("ocr_prefer_last_line") is not None:
+            self.ocr_prefer_last.set(bool(bag.get("ocr_prefer_last_line")))
+
+        # Macros
+        if "macros" in bag and isinstance(bag.get("macros"), list):
+            slots = [str(m)[:200] for m in bag["macros"]][:MACROS_MAX]
+            while len(slots) < MACROS_MAX:
+                slots.append("")
+            self.macro_slots = slots
+            self._refresh_macro_ui_if_any()
+
+        # Status labels for OCR / market
+        try:
+            self._refresh_ocr_status()
+        except Exception:
+            pass
+        try:
+            self._refresh_market_status()
+        except Exception:
+            pass
+
+        self._active_game_for_settings = game
+
+    def _refresh_macro_ui_if_any(self):
+        """Push macro_slots into Economy macro buttons if present."""
+        if not hasattr(self, "macro_slots"):
+            return
+        if hasattr(self, "macro_btns") and isinstance(self.macro_btns, list):
+            for i, btn in enumerate(self.macro_btns):
+                try:
+                    btn.configure(text=self._macro_btn_label(i))
+                except Exception:
+                    pass
+
+    def _game_settings_for_save(self) -> dict[str, dict]:
+        """Snapshot active game then return serializable game_settings."""
+        try:
+            if hasattr(self, "game_var"):
+                self._snapshot_game_settings(self.game_var.get())
+        except Exception:
+            pass
+        out: dict[str, dict] = {}
+        for gname, bag in (getattr(self, "game_settings", {}) or {}).items():
+            if not isinstance(bag, dict):
+                continue
+            clean: dict = {}
+            for k, v in bag.items():
+                if k == "chat_region" or k == "market_region":
+                    reg = _valid_region_dict(v)
+                    if reg:
+                        clean[k] = reg
+                    elif v is None:
+                        clean[k] = None
+                elif k == "macros" and isinstance(v, list):
+                    clean[k] = [str(x)[:200] for x in v][:MACROS_MAX]
+                elif k == "steam_appid":
+                    # Keep None for non-Steam; int for Steam
+                    if v is None or v == "":
+                        clean[k] = None
+                    else:
+                        try:
+                            clean[k] = int(v)
+                        except Exception:
+                            clean[k] = None
+                elif k in GAME_SETTING_KEYS or k in (
+                    "chat_region", "market_region", "macros", "steam_appid"
+                ):
+                    clean[k] = v
+            out[str(gname)] = clean
+        # Ensure all profile games present
+        for gname, prof in GAME_PROFILES.items():
+            if gname not in out:
+                out[gname] = {"steam_appid": prof.get("steam_appid")}
+            elif "steam_appid" not in out[gname]:
+                out[gname]["steam_appid"] = prof.get("steam_appid")
+        return out
 
     def _on_house_style_edited(self, _event=None, toast: bool = False):
         self._sync_house_style_from_ui()
@@ -1658,8 +2217,15 @@ class GamersChatHelper:
             pass
 
     def on_close(self):
-        self.save_settings()
-        self.root.destroy()
+        self._alive = False
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _on_configure(self, event=None):
         if event and event.widget is not self.root:
@@ -1695,6 +2261,96 @@ class GamersChatHelper:
 
     def accent(self) -> str:
         return self.profile().get("accent", C["accent"])
+
+    # ------------------------------------------------------------------
+    # Per-game vocabulary normalizer (DG=Dungeon, WB=World Boss, …)
+    # ------------------------------------------------------------------
+    def game_vocab(self, game: Optional[str] = None) -> dict[str, str]:
+        """Abbreviation → meaning for the active (or given) game."""
+        game = game or (self.game_var.get() if hasattr(self, "game_var") else "The Quinfall")
+        prof = GAME_PROFILES.get(game) or {}
+        raw = prof.get("vocab") or {}
+        out: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                key = str(k).strip()
+                val = str(v).strip()
+                if key and val:
+                    out[key] = val
+        return out
+
+    def vocab_prompt_block(self, game: Optional[str] = None) -> str:
+        """System-prompt block teaching the model this game's shorthand."""
+        vocab = self.game_vocab(game)
+        if not vocab:
+            return ""
+        # Longer keys first so display is stable
+        items = sorted(vocab.items(), key=lambda kv: (-len(kv[0]), kv[0].upper()))
+        lines = "\n".join(f"- {k} = {v}" for k, v in items)
+        gname = game or (self.game_var.get() if hasattr(self, "game_var") else "this game")
+        return (
+            f"GAME SHORTHAND VOCAB for {gname} — ALWAYS decode when reading chat:\n"
+            f"{lines}\n"
+            "If a player writes an abbreviation above, treat it as that full meaning.\n"
+            "You may reuse the same shorthand when it is natural for this game.\n"
+            "Do NOT invent other games' acronyms.\n"
+        )
+
+    def vocab_hits_in_text(self, text: str, game: Optional[str] = None) -> list[tuple[str, str]]:
+        """Return (abbrev, meaning) pairs found as whole tokens in text."""
+        vocab = self.game_vocab(game)
+        if not text or not vocab:
+            return []
+        # Sort longest first so multi-char keys win over short ones
+        keys = sorted(vocab.keys(), key=lambda k: (-len(k), k.upper()))
+        found: list[tuple[str, str]] = []
+        seen_lower: set[str] = set()
+        for key in keys:
+            # Word boundary; M+ etc. need escaping
+            pat = r"(?<![A-Za-z0-9])" + re.escape(key) + r"(?![A-Za-z0-9])"
+            if re.search(pat, text, flags=re.IGNORECASE):
+                low = key.lower()
+                if low in seen_lower:
+                    continue
+                seen_lower.add(low)
+                found.append((key, vocab[key]))
+        return found
+
+    def annotate_text_with_vocab(self, text: str, game: Optional[str] = None) -> str:
+        """
+        Keep original chat text and append a shorthand gloss for the model.
+        Example: 'LFG DG Grim' → '...\\n(Shorthand: DG = Dungeon …)'
+        """
+        t = (text or "").strip()
+        if not t:
+            return t
+        hits = self.vocab_hits_in_text(t, game)
+        if not hits:
+            return t
+        gloss = "; ".join(f"{k} = {v}" for k, v in hits)
+        return f"{t}\n(Shorthand in that line: {gloss})"
+
+    def expand_game_vocab(self, text: str, game: Optional[str] = None) -> str:
+        """
+        Inline expand known shorthand for model context:
+        'LFG DG' → 'LFG DG (Dungeon …)'
+        Does not change UI-facing strings unless the caller chooses to.
+        """
+        t = text or ""
+        vocab = self.game_vocab(game)
+        if not t or not vocab:
+            return t
+        keys = sorted(vocab.keys(), key=lambda k: (-len(k), k.upper()))
+        out = t
+        for key in keys:
+            meaning = vocab[key]
+            pat = r"(?<![A-Za-z0-9])(" + re.escape(key) + r")(?![A-Za-z0-9(])"
+
+            def _sub(m: Match[str], meaning: str = meaning) -> str:
+                return f"{m.group(0)} ({meaning})"
+
+            out = re.sub(pat, _sub, out, flags=re.IGNORECASE)
+        return out
 
     def sync_activity_if_needed(self):
         acts = self.profile()["activities"]
@@ -1895,8 +2551,113 @@ class GamersChatHelper:
         try:
             fn()
         finally:
-            self.root.after(10, lambda: self._restore_foreground(prev))
-            self.root.after(50, lambda: self._restore_foreground(prev))
+            self.schedule_ui(lambda: self._restore_foreground(prev), delay_ms=10)
+            self.schedule_ui(lambda: self._restore_foreground(prev), delay_ms=50)
+
+    def _tk_alive(self) -> bool:
+        """True while the Tk app is open. Safe from any thread.
+
+        Worker threads must NOT call winfo_exists()/widget methods — Tk is not
+        thread-safe. From workers we only trust the _alive flag.
+        """
+        if not getattr(self, "_alive", False):
+            return False
+        try:
+            if threading.current_thread() is not threading.main_thread():
+                return True
+            return bool(self.root.winfo_exists())
+        except Exception:
+            return False
+
+    def _start_ui_queue_pump(self):
+        """Begin draining the thread-safe UI queue on the main thread."""
+        if getattr(self, "_ui_pump_started", False):
+            return
+        self._ui_pump_started = True
+        self._pump_ui_queue()
+
+    def _pump_ui_queue(self):
+        """Main-thread only: run queued UI callbacks, then reschedule."""
+        if not getattr(self, "_alive", False):
+            return
+        try:
+            while True:
+                fn = self._ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        try:
+            self.root.after(50, self._pump_ui_queue)
+        except Exception:
+            self._alive = False
+
+    def schedule_ui(self, fn: Callable, delay_ms: int = 0) -> bool:
+        """Marshal fn onto the Tk main thread. Safe from worker threads and after close.
+
+        Python 3.14 / Tk rejects root.after() from non-main threads
+        ("main thread is not in main loop"). Workers therefore only enqueue;
+        the main-thread pump calls after()/runs the callable.
+
+        Returns False if the app is shutting down. Never call Tk widgets from
+        the failure path — only plain Python.
+        """
+        if not getattr(self, "_alive", False):
+            return False
+        if not callable(fn):
+            return False
+
+        ms = 0
+        try:
+            ms = int(delay_ms) if delay_ms else 0
+        except Exception:
+            ms = 0
+
+        on_main = threading.current_thread() is threading.main_thread()
+
+        def _run_now():
+            if not getattr(self, "_alive", False):
+                return
+            try:
+                fn()
+            except Exception:
+                pass
+
+        def _run_delayed():
+            if not getattr(self, "_alive", False):
+                return
+            try:
+                self.root.after(ms, _run_now)
+            except Exception:
+                self._alive = False
+
+        # Main thread can use after() directly
+        if on_main:
+            try:
+                if ms > 0:
+                    self.root.after(ms, _run_now)
+                else:
+                    self.root.after(0, _run_now)
+                return True
+            except RuntimeError:
+                self._alive = False
+                return False
+            except Exception:
+                return False
+
+        # Worker thread: never call Tk — queue for the main-thread pump
+        try:
+            if ms > 0:
+                self._ui_queue.put(_run_delayed)
+            else:
+                self._ui_queue.put(_run_now)
+            return True
+        except Exception:
+            return False
 
     # =====================================================================
     # Shell UI
@@ -2336,41 +3097,36 @@ class GamersChatHelper:
 
     def build_header(self):
         """
-        Three-row header so tall/narrow (“vertical”) windows never hide tools
-        past the Steam chip. Restart is always top-right on row 1.
+        Slim daily-path header: Game · limit · AI · status.
+        Power tools (type size, HUD/Pin/Auto/Focus/Keys, Oracle, Export, Restart) live in ⋯
         """
         self.header = ctk.CTkFrame(self.root, fg_color=C["surface"], corner_radius=14)
         self.header.pack(fill="x", padx=pad(14), pady=(pad(14), pad(4)))
 
-        # ---- Row 1: brand + game  |  Restart (always visible) ----
         row1 = ctk.CTkFrame(self.header, fg_color="transparent")
-        row1.pack(fill="x", padx=pad(12), pady=(pad(10), pad(4)))
+        row1.pack(fill="x", padx=pad(12), pady=(pad(10), pad(8)))
 
-        # Restart + Help first on the right so they never compete with left packing
-        self.header_restart_btn = ctk.CTkButton(
-            row1, text="↻ Restart", width=sz(100), height=sz(30), font=f_ui(12, "bold"),
-            fg_color=C["accent"], hover_color=C["accent_h"],
-            command=self.restart_app,
+        # Right: overflow + help (always visible, low noise)
+        self.header_more_btn = ctk.CTkButton(
+            row1, text="⋯", width=sz(40), height=sz(30), font=f_ui(16, "bold"),
+            fg_color=C["elevated"], hover_color=C["hover"],
+            command=self._open_header_overflow,
         )
-        self.header_restart_btn.pack(side="right", padx=(pad(8), 0))
+        self.header_more_btn.pack(side="right", padx=(pad(6), 0))
         tip(
-            self.header_restart_btn,
-            "Save settings and relaunch Start Gamers Chat Helper.bat from this app folder.\n"
-            "Use after code updates so you load the latest UI.\n"
-            "Also on Setup tab (full-width button).",
+            self.header_more_btn,
+            "More: type size, HUD / Pin / Auto / Focus / Keys,\n"
+            "Oracle, Export, Restart, Setup.",
         )
+        # Keep references so Setup / restarts still work if code looks them up
+        self.header_restart_btn = self.header_more_btn
         self.header_help_btn = ctk.CTkButton(
-            row1, text="? Help", width=sz(80), height=sz(30), font=f_ui(12, "bold"),
+            row1, text="?", width=sz(36), height=sz(30), font=f_ui(14, "bold"),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.open_help_manual,
         )
-        self.header_help_btn.pack(side="right", padx=(pad(6), 0))
-        tip(
-            self.header_help_btn,
-            "Open the full Help Manual.\n"
-            "F1 = context help for the current tab.\n"
-            "Also: menu Help → Full Manual.",
-        )
+        self.header_help_btn.pack(side="right", padx=(pad(4), 0))
+        tip(self.header_help_btn, "Help manual · F1 = this tab")
 
         logo_s = sz(28)
         self.logo_label = ctk.CTkLabel(row1, text="", width=logo_s, height=logo_s)
@@ -2406,8 +3162,7 @@ class GamersChatHelper:
         self.game_combo.pack(side="left", padx=pad(4))
         tip(
             self.game_combo,
-            "Active game profile.\n"
-            "Sets character limit, LFG content list, stock lines, and Steam AppID for the player count.",
+            "Active game profile — limit, LFG content, vocab, Steam AppID.",
         )
 
         self.limit_badge = ctk.CTkLabel(
@@ -2415,43 +3170,37 @@ class GamersChatHelper:
             fg_color=C["success_dim"], corner_radius=8, padx=pad(8), pady=pad(3),
         )
         self.limit_badge.pack(side="left", padx=pad(6))
+        tip(self.limit_badge, "Hard character limit. Copy blocks if Generated line is over.")
+
+        # Status chips (AI + ready) — still daily-path critical
+        self.llm_dot = ctk.CTkLabel(
+            row1,
+            text="AI · off",
+            font=f_ui(12, "bold"),
+            text_color=C["danger"],
+            fg_color=C["elevated"],
+            corner_radius=8,
+            padx=pad(10),
+            pady=pad(5),
+            cursor="hand2",
+        )
+        self.llm_dot.pack(side="left", padx=(pad(10), pad(6)))
+        self.llm_dot.bind("<Button-1>", lambda e: self.open_lm_setup())
         tip(
-            self.limit_badge,
-            "Hard character limit for this game’s chat.\n"
-            "Copy is blocked if the Generated line is over this number.",
+            self.llm_dot,
+            "LM Studio · click Setup.\n"
+            "AI · on = server reachable for Write / OCR / Economy.",
         )
 
-        # ---- Row 2: type size + Steam players + AI server (own row so nothing clips) ----
+        self.copy_badge = ctk.CTkLabel(
+            row1, text="ready", font=f_ui(11), text_color=C["muted"],
+        )
+        self.copy_badge.pack(side="left", padx=(0, pad(4)))
+        tip(self.copy_badge, "ready · thinking · copied · offline · over limit")
+
+        # Steam on a quiet second chip row (optional glance, not tools clutter)
         row2 = ctk.CTkFrame(self.header, fg_color="transparent")
-        row2.pack(fill="x", padx=pad(12), pady=(pad(2), pad(2)))
-
-        type_box = ctk.CTkFrame(row2, fg_color=C["elevated"], corner_radius=10)
-        type_box.pack(side="left", padx=(0, pad(10)))
-        btn_am = ctk.CTkButton(
-            type_box, text="A−", width=sz(34), height=sz(28), font=f_ui(12, "bold"),
-            fg_color="transparent", hover_color=C["hover"], text_color=C["muted"],
-            command=lambda: self.nudge_type_scale(-1),
-        )
-        btn_am.pack(side="left", padx=(pad(2), 0), pady=pad(2))
-        tip(btn_am, "Smaller UI text (also Ctrl −).")
-        self.type_scale_label = ctk.CTkLabel(
-            type_box, text=TYPE_PRESETS[self.font_scale_key]["label"],
-            width=sz(64), font=f_ui(11, "bold"), text_color=C["text"],
-        )
-        self.type_scale_label.pack(side="left", padx=pad(2))
-        btn_ap = ctk.CTkButton(
-            type_box, text="A+", width=sz(34), height=sz(28), font=f_ui(13, "bold"),
-            fg_color="transparent", hover_color=C["hover"], text_color=C["text"],
-            command=lambda: self.nudge_type_scale(1),
-        )
-        btn_ap.pack(side="left", padx=(0, pad(2)), pady=pad(2))
-        tip(btn_ap, "Larger UI text (also Ctrl +). Ctrl 0 resets.")
-        tip(
-            type_box,
-            "UI text size (A− / A+). Larger type also scales buttons and padding slightly.",
-        )
-
-        # Steam concurrent players — NOT "AI live"
+        row2.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
         self.steam_dot = ctk.CTkLabel(
             row2,
             text="Players · …",
@@ -2463,121 +3212,89 @@ class GamersChatHelper:
             padx=pad(10),
             pady=pad(5),
         )
-        self.steam_dot.pack(side="left", padx=(0, pad(8)))
+        self.steam_dot.pack(side="left")
         self.steam_dot.bind("<Button-1>", lambda e: self.open_steam_trends())
         tip(
             self.steam_dot,
-            "STEAM PLAYER COUNT (not AI) — GLOBAL total for this AppID\n"
-            "(Steam does not publish separate NA / Europe / Asia counts for Quinfall).\n"
-            "Chip may show which regions are in local evening prime right now.\n"
-            "Click → Setup for chart, high/low report, and region lens (NA/EU/Asia).",
+            "Steam concurrent players (not AI). Click → Setup chart.\n"
+            "Non-Steam games show n/a.",
         )
+        self.type_scale_label = ctk.CTkLabel(
+            row2, text=TYPE_PRESETS[self.font_scale_key]["label"],
+            font=f_ui(11), text_color=C["faint"],
+        )
+        # Hidden label kept for type-scale code that updates it; shown in overflow menu
+        self.type_scale_label.pack_forget()
+        ctk.CTkLabel(
+            row2, text="  ·  F6 Write · F7 Copy · hover for tips",
+            font=f_ui(10), text_color=C["faint"],
+        ).pack(side="left", padx=(pad(8), 0))
 
-        self.llm_dot = ctk.CTkLabel(
-            row2,
-            text="AI · off",
-            font=f_ui(12, "bold"),
-            text_color=C["danger"],
-            fg_color=C["elevated"],
-            corner_radius=8,
-            padx=pad(10),
-            pady=pad(5),
-        )
-        self.llm_dot.pack(side="left", padx=(0, pad(8)))
-        tip(
-            self.llm_dot,
-            "LOCAL AI SERVER (LM Studio) — not Steam players\n"
-            "AI · on  = local server reachable (default http://127.0.0.1:1234).\n"
-            "AI · off = start LM Studio, load a model, enable Local Server.\n"
-            "Powers Write for LFG / Activity / Reply / Recruit / optional Noise,\n"
-            "dad jokes, and vision OCR when Tesseract isn’t enough.",
-        )
-
-        self.copy_badge = ctk.CTkLabel(
-            row2, text="ready", font=f_ui(11), text_color=C["muted"],
-        )
-        self.copy_badge.pack(side="left", padx=(0, pad(4)))
-        tip(
-            self.copy_badge,
-            "Status of the last action: ready · thinking · copied · offline · over limit.",
-        )
-
-        # ---- Row 3: window toggles only (never squeezed by Steam/AI) ----
-        row3 = ctk.CTkFrame(self.header, fg_color="transparent")
-        row3.pack(fill="x", padx=pad(12), pady=(pad(2), pad(10)))
-
-        cb = sz(16)
-        for text, var, cmd, help_txt in (
-            (
-                "HUD",
-                self.hud_mode,
-                self.toggle_hud,
-                "Compact always-on-top strip with the current line.\n"
-                "Esc or Exit HUD returns to the full window.",
-            ),
-            (
-                "Pin",
-                self.always_on_top,
-                self.apply_on_top,
-                "Keep Chat Helper above other windows (including your game).",
-            ),
-            (
-                "Auto",
-                self.auto_copy,
-                self.save_settings,
-                "When a line finishes generating, copy it to the clipboard automatically.",
-            ),
-            (
-                "Focus",
-                self.focus_mode,
-                self.toggle_focus_mode,
-                "Focus mode: pin + auto-copy + quieter chrome.\n"
-                "Hotkeys still work. Great for raid-night multitasking.",
-            ),
-            (
-                "Keys",
-                self.hotkeys_enabled,
-                self.save_settings,
-                "App hotkeys (when this window is focused):\n"
-                "F6 Write · F7 Copy · F8 Market snap · F9 Re-price last · F10 Oracle",
-            ),
-        ):
-            box = ctk.CTkCheckBox(
-                row3, text=text, variable=var, command=cmd,
-                font=f_ui(12), text_color=C["muted"],
-                fg_color=C["accent"], hover_color=C["accent_h"],
-                border_color=C["line"], checkbox_width=cb, checkbox_height=cb, width=sz(58),
+    def _open_header_overflow(self):
+        """Native menu for power controls — keeps the daily header calm."""
+        try:
+            menu = tk.Menu(
+                self.root, tearoff=0,
+                bg=C["elevated"], fg=C["text"],
+                activebackground=C["hover"], activeforeground=C["text"],
+                bd=0, font=(FONT_UI, 10),
             )
-            box.pack(side="left", padx=(0, pad(10)))
-            tip(box, help_txt)
+        except Exception:
+            menu = tk.Menu(self.root, tearoff=0)
 
-        oracle_btn = ctk.CTkButton(
-            row3, text="✦ Oracle", width=sz(88), height=sz(28), font=f_ui(11, "bold"),
-            fg_color=C["purple"], hover_color=C["purple_h"],
-            command=self.run_oracle,
-        )
-        oracle_btn.pack(side="right", padx=(pad(6), 0))
-        tip(
-            oracle_btn,
-            "Surprise daily vibe: fortune + Steam pop advice + a random LFG location.\n"
-            "Hotkey: F10",
-        )
-        export_btn = ctk.CTkButton(
-            row3, text="⇪ Export", width=sz(80), height=sz(28), font=f_ui(11, "bold"),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.export_session_pack,
-        )
-        export_btn.pack(side="right", padx=(pad(4), 0))
-        tip(export_btn, "Dump this session (copies, lines, economy, Steam peak) to session_export.txt")
+        menu.add_command(label="Type size  A−", command=lambda: self.nudge_type_scale(-1))
+        menu.add_command(label="Type size  A+", command=lambda: self.nudge_type_scale(1))
+        menu.add_command(label="Type size  reset (M)", command=lambda: self.apply_type_scale("M"))
+        menu.add_separator()
 
-        hint = ctk.CTkLabel(
-            row3,
-            text="Hover any control for help",
-            font=f_ui(10),
-            text_color=C["faint"],
-        )
-        hint.pack(side="right", padx=(0, pad(6)))
-        tip(hint, "Most buttons, menus, and status chips show a short explanation on hover.\nF6 Write · F7 Copy · F8 Market · F9 Reprice · F10 Oracle")
+        def _toggle(var, after=None):
+            def go():
+                try:
+                    var.set(not bool(var.get()))
+                    if after:
+                        after()
+                    else:
+                        self.save_settings()
+                except Exception:
+                    pass
+            return go
+
+        def _check(label, var, after=None):
+            try:
+                on = bool(var.get())
+            except Exception:
+                on = False
+            mark = "✓  " if on else "    "
+            menu.add_command(label=f"{mark}{label}", command=_toggle(var, after))
+
+        _check("HUD mode", self.hud_mode, self.toggle_hud)
+        _check("Pin on top", self.always_on_top, self.apply_on_top)
+        _check("Auto-copy", self.auto_copy, self.save_settings)
+        _check("Focus mode", self.focus_mode, self.toggle_focus_mode)
+        _check("Hotkeys (F6–F10)", self.hotkeys_enabled, self.save_settings)
+        menu.add_separator()
+        menu.add_command(label="Oracle (F10)", command=self.run_oracle)
+        menu.add_command(label="Export session (Ctrl+E)", command=self.export_session_pack)
+        menu.add_command(label="Open Setup tab", command=self.open_lm_setup)
+        menu.add_separator()
+        menu.add_command(label="Restart app", command=self.restart_app)
+        menu.add_command(label="Help manual", command=self.open_help_manual)
+
+        try:
+            # Post near the ⋯ button
+            bx = self.header_more_btn.winfo_rootx()
+            by = self.header_more_btn.winfo_rooty() + self.header_more_btn.winfo_height()
+            menu.tk_popup(bx, by)
+        except Exception:
+            try:
+                menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+            except Exception:
+                pass
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
 
     def build_footer(self):
         foot = ctk.CTkFrame(self.root, fg_color="transparent", height=sz(36))
@@ -2745,63 +3462,21 @@ class GamersChatHelper:
 
 
     def build_sticky_copy_bar(self):
-        """Pinned green Copy — same place every workflow."""
-        self.sticky_copy_bar = ctk.CTkFrame(
-            self.root, fg_color=C["elevated"], corner_radius=12,
-            border_width=1, border_color=C["success"],
-        )
-        inner = ctk.CTkFrame(self.sticky_copy_bar, fg_color="transparent")
-        inner.pack(fill="x", padx=pad(12), pady=pad(8))
-        ctk.CTkLabel(
-            inner, text="YOUR LINE", font=f_ui(10, "bold"), text_color=C["faint"],
-        ).pack(side="left", padx=(0, pad(10)))
-        self.quick_len = ctk.CTkLabel(
-            inner, text="0 / 150", font=f_ui(13, "bold"), text_color=C["success"],
-        )
-        self.quick_len.pack(side="left")
-        self.sticky_copy_btn = ctk.CTkButton(
-            inner, text="Copy", width=sz(140), height=sz(40), font=f_ui(15, "bold"),
-            fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
-            command=self.copy_quick_out,
-        )
-        self.sticky_copy_btn.pack(side="right")
-        ctk.CTkButton(
-            inner, text="★ Fav", width=sz(72), height=sz(40), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.favorite_quick_out,
-        ).pack(side="right", padx=(0, pad(8)))
-        ctk.CTkButton(
-            inner, text="✦ Spice", width=sz(80), height=sz(40), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.spice_selected_quick,
-        ).pack(side="right", padx=(0, pad(6)))
+        """
+        Bottom sticky bar disabled — Copy lives next to Generated line.
+        Keep a lightweight frame object so HUD/show code does not crash.
+        """
+        self.sticky_copy_bar = ctk.CTkFrame(self.root, fg_color="transparent", height=0)
+        # sticky_copy_btn is reassigned to editor_copy_btn after generator tab builds
 
     def _show_sticky_copy_bar(self, show: bool):
+        # No bottom bar; Copy is on the Generated line card
         if not hasattr(self, "sticky_copy_bar"):
             return
         try:
             self.sticky_copy_bar.pack_forget()
         except Exception:
             pass
-        if show and not self.hud_mode.get():
-            # Pack after main_body, before status footer
-            try:
-                foot = None
-                for w in self.root.winfo_children():
-                    if w is self.main_body or w is self.header or w is self.hud_body:
-                        continue
-                    if w is self.sticky_copy_bar:
-                        continue
-                    if hasattr(self, "status_bar") and w == self.status_bar.master:
-                        foot = w
-                if foot is not None:
-                    self.sticky_copy_bar.pack(
-                        fill="x", padx=pad(14), pady=(pad(4), 0), before=foot,
-                    )
-                else:
-                    self.sticky_copy_bar.pack(fill="x", padx=pad(14), pady=(pad(4), 0))
-            except Exception:
-                self.sticky_copy_bar.pack(fill="x", padx=pad(14), pady=(pad(4), 0))
 
     def build_generator_tab(self):
         """Single intent-driven Chat Generator (replaces Quick/Wingman/Recruit)."""
@@ -2950,7 +3625,7 @@ class GamersChatHelper:
             "instead of a bigger block of chat history.",
         )
 
-        # ---- Generated editor ----
+        # ---- Generated editor + Copy right next to it (not buried at window bottom) ----
         editor_card = ctk.CTkFrame(
             tab, fg_color=C["elevated"], corner_radius=12,
             border_width=1, border_color=C["success"],
@@ -2959,18 +3634,20 @@ class GamersChatHelper:
         ed_head = ctk.CTkFrame(editor_card, fg_color="transparent")
         ed_head.pack(fill="x", padx=pad(14), pady=(pad(10), pad(4)))
         ctk.CTkLabel(
-            ed_head, text="GENERATED LINE", font=f_ui(11, "bold"), text_color=C["faint"],
+            ed_head, text="GENERATED LINE",
+            font=f_ui(11, "bold"), text_color=C["faint"],
         ).pack(side="left")
         self.editor_len = ctk.CTkLabel(
             ed_head, text="0 / 150", font=f_ui(12, "bold"), text_color=C["success"],
         )
         self.editor_len.pack(side="right")
+        # Mirror for sticky bar meter if present
+        self.quick_len = self.editor_len
 
-        # Text box + Copy button side-by-side (Copy lives on the editor)
         ed_body = ctk.CTkFrame(editor_card, fg_color="transparent")
         ed_body.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
         self.gen_editor = ctk.CTkTextbox(
-            ed_body, height=sz(88), font=f_mono(14),
+            ed_body, height=sz(96), font=f_mono(14),
             fg_color=C["surface"], text_color=C["text"],
             border_width=0, corner_radius=10, wrap="word",
         )
@@ -2980,58 +3657,58 @@ class GamersChatHelper:
         self.quick_out = self.gen_editor
         self.ai_output = self.gen_editor
 
-        ed_side = ctk.CTkFrame(ed_body, fg_color="transparent", width=sz(120))
+        ed_side = ctk.CTkFrame(ed_body, fg_color="transparent", width=sz(128))
         ed_side.pack(side="right", fill="y")
         ed_side.pack_propagate(False)
         self.editor_copy_btn = ctk.CTkButton(
-            ed_side, text="Copy", height=sz(48), font=f_ui(15, "bold"),
+            ed_side, text="Copy", height=sz(56), font=f_ui(16, "bold"),
             fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
             command=self.copy_quick_out,
         )
         self.editor_copy_btn.pack(fill="x", pady=(0, pad(6)))
+        tip(self.editor_copy_btn, "Copy Generated line · F7")
+        # sticky_copy_btn aliases to this so flash/tooltips keep working
+        self.sticky_copy_btn = self.editor_copy_btn
         ctk.CTkButton(
             ed_side, text="★ Fav", height=sz(32), font=f_ui(12),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.favorite_quick_out,
-        ).pack(fill="x", pady=(0, pad(4)))
-        ctk.CTkButton(
-            ed_side, text="Trim", height=sz(32), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.trim_gen_editor,
         ).pack(fill="x")
 
         refine = ctk.CTkFrame(editor_card, fg_color="transparent")
         refine.pack(fill="x", padx=pad(12), pady=(0, pad(4)))
-        ctk.CTkLabel(refine, text="Refine", font=f_ui(11, "bold"), text_color=C["muted"]).pack(
-            side="left", padx=(0, pad(8))
-        )
-        for label, cmd, bg, tc in (
-            ("Shorter", self.refine_shorter, C["surface"], C["text"]),
-            ("Safer", self.refine_safer, C["success_dim"], C["success"]),
-            ("Spicier", self.refine_spicier, "#422006", C["warn"]),
-            ("Another", self.regenerate_last, C["elevated"], C["text"]),
+        for label, cmd in (
+            ("Shorter", self.refine_shorter),
+            ("Another", self.regenerate_last),
+            ("Trim", self.trim_gen_editor),
+            ("Clear", self.clear_gen_editor),
         ):
             ctk.CTkButton(
-                refine, text=label, width=sz(78), height=sz(32), font=f_ui(12, "bold"),
-                fg_color=bg, hover_color=C["hover"], text_color=tc,
+                refine, text=label, width=sz(72), height=sz(30), font=f_ui(12),
+                fg_color=C["surface"], hover_color=C["hover"], text_color=C["text"],
                 border_width=1, border_color=C["line"], command=cmd,
-            ).pack(side="left", padx=pad(3))
+            ).pack(side="left", padx=(0, pad(4)))
         ctk.CTkButton(
-            refine, text="Clear", width=sz(64), height=sz(32), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.clear_gen_editor,
-        ).pack(side="left", padx=pad(3))
+            refine, text="Safer", width=sz(64), height=sz(30), font=f_ui(11),
+            fg_color="transparent", hover_color=C["hover"], text_color=C["muted"],
+            command=self.refine_safer,
+        ).pack(side="left", padx=(pad(4), 0))
+        ctk.CTkButton(
+            refine, text="Spicier", width=sz(64), height=sz(30), font=f_ui(11),
+            fg_color="transparent", hover_color=C["hover"], text_color=C["muted"],
+            command=self.refine_spicier,
+        ).pack(side="left")
 
         self.variant_frame = ctk.CTkFrame(editor_card, fg_color="transparent")
         self.variant_frame.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
         self.variant_btns: list[ctk.CTkButton] = []
         for i in range(3):
             b = ctk.CTkButton(
-                self.variant_frame, text=f"Option {i + 1}", height=sz(30), state="disabled",
+                self.variant_frame, text=f"Option {i + 1}", height=sz(28), state="disabled",
                 font=f_ui(11), fg_color=C["surface"], hover_color=C["hover"],
                 command=lambda idx=i: self.pick_variant(idx),
             )
-            b.pack(fill="x", pady=2)
+            b.pack(fill="x", pady=1)
             self.variant_btns.append(b)
 
         self.quick_scroll = ctk.CTkScrollableFrame(
@@ -3110,8 +3787,8 @@ class GamersChatHelper:
 
     def _build_lfg_panel(self, parent):
         self._job_card_header(
-            parent, "LFG — FIND A GROUP",
-            "Content + location + Party Finder. Need is under Advanced Tweaks.",
+            parent, "LFG",
+            "Content + location. Need is under Advanced Tweaks.",
             accent=C["accent"],
         )
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -3134,30 +3811,10 @@ class GamersChatHelper:
         )
         self.lfg_location_menu.pack(side="left", padx=(pad(8), 0))
 
-        loc_row = ctk.CTkFrame(parent, fg_color="transparent")
-        loc_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
-        self.lfg_location_entry = ctk.CTkEntry(
-            loc_row, height=sz(32), font=f_ui(12),
-            placeholder_text="Add location…",
-            fg_color=C["surface"], border_color=C["line"],
-        )
-        self.lfg_location_entry.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
-        self.lfg_location_entry.bind("<Return>", lambda e: self.add_lfg_location())
-        ctk.CTkButton(
-            loc_row, text="Add", width=sz(64), height=sz(32), font=f_ui(12, "bold"),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.add_lfg_location,
-        ).pack(side="left", padx=(0, pad(4)))
-        ctk.CTkButton(
-            loc_row, text="Remove", width=sz(72), height=sz(32), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.remove_lfg_location,
-        ).pack(side="left")
-
         pf_row = ctk.CTkFrame(parent, fg_color="transparent")
-        pf_row.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
+        pf_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
         self.lfg_party_finder_cb = ctk.CTkCheckBox(
-            pf_row, text="Party Finder listed",
+            pf_row, text="Party Finder",
             variable=self.lfg_party_finder,
             font=f_ui(12), text_color=C["text"],
             fg_color=C["accent"], hover_color=C["accent_h"], border_color=C["line"],
@@ -3165,30 +3822,44 @@ class GamersChatHelper:
             checkbox_width=sz(18), checkbox_height=sz(18),
         )
         self.lfg_party_finder_cb.pack(side="left")
-        tip(
-            self.lfg_party_finder_cb,
-            "When checked, the AI includes “in Party Finder” in the LFG line.",
-        )
-        ctk.CTkLabel(
-            pf_row, text="  e.g. LFG Loot / XP Grind @ Cemetery in Party Finder",
-            font=f_ui(11), text_color=C["faint"],
-        ).pack(side="left")
+        tip(self.lfg_party_finder_cb, "Include “in Party Finder” in the LFG line.")
 
-        self.write_lfg_btn = ctk.CTkButton(
-            parent, text="Write LFG line", height=sz(42), font=f_ui(14, "bold"),
-            fg_color=C["accent"], hover_color=C["accent_h"], command=self.generate_lfg,
+        self.write_lfg_btn = self._pack_primary_cta(
+            parent, "Write LFG  ·  F6", self.generate_lfg,
+            tip_text="Primary action — Content + Location → Generated line → Copy below.",
         )
-        self.write_lfg_btn.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
-        tip(self.write_lfg_btn, "Generate an LFG line from Content + Location + Advanced need/mood.")
+
+        def _lfg_more(fr):
+            loc_row = ctk.CTkFrame(fr, fg_color="transparent")
+            loc_row.pack(fill="x", padx=pad(10), pady=pad(8))
+            self.lfg_location_entry = ctk.CTkEntry(
+                loc_row, height=sz(30), font=f_ui(12),
+                placeholder_text="Add custom location…",
+                fg_color=C["elevated"], border_color=C["line"],
+            )
+            self.lfg_location_entry.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+            self.lfg_location_entry.bind("<Return>", lambda e: self.add_lfg_location())
+            ctk.CTkButton(
+                loc_row, text="Add", width=sz(56), height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.add_lfg_location,
+            ).pack(side="left", padx=(0, pad(4)))
+            ctk.CTkButton(
+                loc_row, text="Remove", width=sz(68), height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.remove_lfg_location,
+            ).pack(side="left")
+
+        self._pack_more_block(parent, "lfg", _lfg_more)
 
     def _build_activity_panel(self, parent):
         self._job_card_header(
-            parent, "ACTIVITY CHAT",
-            "Presence / banter — not an LFG. Mood & Heat in Advanced Tweaks.",
+            parent, "ACTIVITY",
+            "Presence / banter — not an LFG.",
             accent=C["info"],
         )
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
+        row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
         self._field_label(row, "Activity").pack(side="left")
         self.activity_menu = ctk.CTkOptionMenu(
             row, variable=self.activity_var, values=self.profile()["activities"],
@@ -3198,20 +3869,20 @@ class GamersChatHelper:
         )
         self.activity_menu.pack(side="left", padx=(pad(8), 0))
         self.ai_activity_menu = self.activity_menu
-        ctk.CTkButton(
-            parent, text="Write activity line", height=sz(42), font=f_ui(14, "bold"),
-            fg_color=C["info"], hover_color="#0ea5e9", text_color="#041018",
-            command=self.generate_activity_line,
-        ).pack(fill="x", padx=pad(14), pady=(0, pad(12)))
+        self._pack_primary_cta(
+            parent, "Write activity  ·  F6", self.generate_activity_line,
+            color=C["info"], hover="#0ea5e9", text_color="#041018",
+            tip_text="Casual presence line → Generated line → Copy below.",
+        )
 
     def _build_reply_panel(self, parent):
         self._job_card_header(
             parent, "REPLY",
-            "Paste what they said — or grab chat from the game screen.",
+            "Paste their line — or grab from game chat.",
             accent=C["purple"],
         )
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
         self._field_label(row, "They said").pack(side="left")
         self.quick_they_said = ctk.CTkEntry(
             row, height=sz(36), font=f_ui(12),
@@ -3221,121 +3892,208 @@ class GamersChatHelper:
         self.quick_they_said.pack(side="left", fill="x", expand=True, padx=(pad(8), 0))
         self.quick_they_said.bind("<Return>", lambda e: self.generate_response_from_quick())
         self.input_statement = self.quick_they_said
-        grab = ctk.CTkFrame(parent, fg_color="transparent")
-        grab.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
-        ctk.CTkButton(
-            grab, text="Set chat box on screen", height=sz(34), width=sz(170), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.calibrate_chat_region,
-        ).pack(side="left", padx=(0, pad(6)))
-        ctk.CTkButton(
-            grab, text="Grab chat from game", height=sz(34), width=sz(150), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=lambda: self.grab_chat_ocr(and_reply=False),
-        ).pack(side="left", padx=(0, pad(6)))
-        ctk.CTkButton(
-            grab, text="Grab + reply", height=sz(34), width=sz(110), font=f_ui(12, "bold"),
-            fg_color=C["purple"], hover_color=C["purple_h"],
-            command=lambda: self.grab_chat_ocr(and_reply=True),
-        ).pack(side="left")
         self.ocr_status = ctk.CTkLabel(
             parent, text=self._ocr_status_text(), font=f_ui(11), text_color=C["faint"], anchor="w",
         )
-        self.ocr_status.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
-        act = ctk.CTkFrame(parent, fg_color="transparent")
-        act.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
+        self.ocr_status.pack(fill="x", padx=pad(14), pady=(0, pad(2)))
+
+        self._pack_primary_cta(
+            parent, "Write reply  ·  F6", self.generate_response_from_quick,
+            color=C["purple"], hover=C["purple_h"],
+            tip_text="Understated reply from “They said” → Generated line → Copy.",
+        )
+
+        # Secondary: grab path (common but secondary to write-when-pasted)
+        grab = ctk.CTkFrame(parent, fg_color="transparent")
+        grab.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
         ctk.CTkButton(
-            act, text="Write clap-back", height=sz(42), font=f_ui(14, "bold"),
-            fg_color=C["purple"], hover_color=C["purple_h"],
-            command=self.generate_response_from_quick,
-        ).pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
+            grab, text="Grab + reply", height=sz(34), font=f_ui(12, "bold"),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["purple"],
+            command=lambda: self.grab_chat_ocr(and_reply=True),
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
         ctk.CTkButton(
-            act, text="3 options", height=sz(42), width=sz(110), font=f_ui(12),
+            grab, text="Grab only", height=sz(34), width=sz(100), font=f_ui(12),
             fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.generate_triple,
+            command=lambda: self.grab_chat_ocr(and_reply=False),
         ).pack(side="left")
+
+        def _reply_more(fr):
+            r = ctk.CTkFrame(fr, fg_color="transparent")
+            r.pack(fill="x", padx=pad(10), pady=pad(8))
+            ctk.CTkButton(
+                r, text="Set chat box", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.calibrate_chat_region,
+            ).pack(side="left", padx=(0, pad(6)))
+            ctk.CTkButton(
+                r, text="Open last grab", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.open_last_chat_capture,
+            ).pack(side="left", padx=(0, pad(6)))
+            ctk.CTkButton(
+                r, text="3 options", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.generate_triple,
+            ).pack(side="left")
+
+        self._pack_more_block(parent, "reply", _reply_more)
 
     def _build_recruit_panel(self, parent):
         self._job_card_header(
             parent, "RECRUIT",
-            "Fit a guild pitch under the character limit.",
+            "Manage pitches (CRUD) · AI rewrite does not auto-save.",
             accent=C["line"],
         )
-        ctk.CTkLabel(parent, text="Template", font=f_ui(11), text_color=C["muted"]).pack(
-            anchor="w", padx=pad(14)
-        )
+
+        # ---- CRUD: always visible, labeled ----
+        ctk.CTkLabel(
+            parent, text="SAVED PITCHES  ·  CREATE · READ · UPDATE · DELETE",
+            font=f_ui(10, "bold"), text_color=C["faint"],
+        ).pack(anchor="w", padx=pad(14), pady=(0, pad(2)))
+
+        pick_row = ctk.CTkFrame(parent, fg_color="transparent")
+        pick_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+        self._field_label(pick_row, "Load").pack(side="left")
+        combo_vals, _ = self._recruit_combo_data()
         self.template_combo = ctk.CTkOptionMenu(
-            parent, values=self.templates or DEFAULT_TEMPLATES,
-            command=self.load_selected_template, height=sz(32), font=f_ui(12),
-            fg_color=C["surface"], button_color=C["hover"],
+            pick_row,
+            values=combo_vals,
+            command=self.load_selected_template,
+            height=sz(32),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            button_color=C["hover"],
         )
-        self.template_combo.pack(fill="x", padx=pad(14), pady=(2, pad(6)))
+        self.template_combo.pack(side="left", fill="x", expand=True, padx=(pad(8), pad(8)))
+        tip(self.template_combo, "READ — load a saved pitch into the seed editor.")
+        self.recruit_crud_status = ctk.CTkLabel(
+            pick_row, text="", font=f_ui(11), text_color=C["faint"], anchor="e",
+        )
+        self.recruit_crud_status.pack(side="right")
+
+        name_row = ctk.CTkFrame(parent, fg_color="transparent")
+        name_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+        ctk.CTkLabel(name_row, text="Name", font=f_ui(11), text_color=C["muted"], width=sz(48)).pack(
+            side="left"
+        )
+        self.recruit_name_var = tk.StringVar(value="")
+        self.recruit_name_entry = ctk.CTkEntry(
+            name_row,
+            textvariable=self.recruit_name_var,
+            placeholder_text="Pitch name (used on Save / Save as new)",
+            height=sz(30),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+        )
+        self.recruit_name_entry.pack(side="left", fill="x", expand=True, padx=(pad(6), 0))
+
+        crud = ctk.CTkFrame(parent, fg_color=C["surface"], corner_radius=10)
+        crud.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
+        crud_inner = ctk.CTkFrame(crud, fg_color="transparent")
+        crud_inner.pack(fill="x", padx=pad(8), pady=pad(8))
+        # Row of clear CRUD actions
+        for label, cmd, fg, hover, tc, help_txt in (
+            ("+ New", self.recruit_new, C["elevated"], C["hover"], C["text"],
+             "CREATE — blank draft (not saved until you Save)."),
+            ("Save", self.recruit_save, C["accent"], C["accent_h"], C["text"],
+             "UPDATE — overwrite the loaded pitch (or create if new draft)."),
+            ("Save as new", self.recruit_save_as_new, C["elevated"], C["hover"], C["text"],
+             "CREATE — always add a new pitch; keeps the original."),
+            ("Duplicate", self.recruit_duplicate, C["elevated"], C["hover"], C["text"],
+             "CREATE — copy current text as another saved pitch."),
+            ("Delete", self.recruit_delete, C["danger_dim"], "#7f1d1d", C["danger"],
+             "DELETE — remove the loaded pitch from the list."),
+        ):
+            b = ctk.CTkButton(
+                crud_inner, text=label, height=sz(32), font=f_ui(12, "bold" if label == "Save" else "normal"),
+                fg_color=fg, hover_color=hover, text_color=tc,
+                border_width=0 if label == "Save" else 1, border_color=C["line"],
+                command=cmd,
+            )
+            b.pack(side="left", padx=(0, pad(4)), fill="x" if label == "Save" else None, expand=(label == "Save"))
+            tip(b, help_txt)
+
         msg_head = ctk.CTkFrame(parent, fg_color="transparent")
         msg_head.pack(fill="x", padx=pad(14), pady=(0, 2))
-        ctk.CTkLabel(msg_head, text="Message", font=f_ui(11), text_color=C["muted"]).pack(side="left")
+        ctk.CTkLabel(msg_head, text="Pitch text (seed)", font=f_ui(11), text_color=C["muted"]).pack(side="left")
         self.counter_label = ctk.CTkLabel(
             msg_head, text="0 / 150", font=f_ui(12, "bold"), text_color=C["success"],
         )
         self.counter_label.pack(side="right")
-
-        msg_row = ctk.CTkFrame(parent, fg_color="transparent")
-        msg_row.pack(fill="x", padx=pad(14), pady=(2, pad(6)))
         self.msg_textbox = ctk.CTkTextbox(
-            msg_row, height=sz(90), font=f_mono(13),
+            parent, height=sz(72), font=f_mono(13),
             fg_color=C["surface"], text_color=C["text"], border_width=0, corner_radius=10,
         )
-        self.msg_textbox.pack(side="left", fill="both", expand=True, padx=(0, pad(8)))
-        if self.templates:
-            self.msg_textbox.insert("1.0", self.templates[0])
+        self.msg_textbox.pack(fill="x", padx=pad(14), pady=(2, pad(4)))
         self.msg_textbox.bind("<KeyRelease>", self.update_counter)
-
-        recruit_side = ctk.CTkFrame(msg_row, fg_color="transparent", width=sz(120))
-        recruit_side.pack(side="right", fill="y")
-        recruit_side.pack_propagate(False)
-        self.recruit_copy_btn = ctk.CTkButton(
-            recruit_side, text="Copy", height=sz(48), font=f_ui(15, "bold"),
-            fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
-            command=self.copy_recruitment,
+        tip(
+            self.msg_textbox,
+            "Pitch text you edit and save.\n"
+            "AI variant rewrites this into Generated line — does NOT auto-save.",
         )
-        self.recruit_copy_btn.pack(fill="x", pady=(0, pad(6)))
-        ctk.CTkButton(
-            recruit_side, text="Use as line", height=sz(32), font=f_ui(11),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.recruit_to_editor,
-        ).pack(fill="x")
 
-        status = ctk.CTkFrame(parent, fg_color="transparent")
-        status.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
         self.safety_progressbar = ctk.CTkProgressBar(
-            status, progress_color=C["success"], fg_color=C["surface"],
+            parent, progress_color=C["success"], fg_color=C["surface"], height=sz(6),
         )
-        self.safety_progressbar.pack(fill="x")
-        btns = ctk.CTkFrame(parent, fg_color="transparent")
-        btns.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
-        ctk.CTkButton(
-            btns, text="Copy", height=sz(40), width=sz(100), font=f_ui(13, "bold"),
-            fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
-            command=self.copy_recruitment,
-        ).pack(side="left", padx=(0, pad(6)))
-        ctk.CTkButton(
-            btns, text="Fit to limit", height=sz(40), font=f_ui(13, "bold"),
-            fg_color=C["purple"], hover_color=C["purple_h"], command=self.ai_fit_recruitment,
-        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
-        ctk.CTkButton(
-            btns, text="Save preset", height=sz(40), width=sz(110), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.save_custom_template,
-        ).pack(side="left")
+        self.safety_progressbar.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+
+        seed_row = ctk.CTkFrame(parent, fg_color="transparent")
+        seed_row.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+        self.recruit_variant_seed_var = tk.StringVar(value="")
+        self.recruit_variant_seed_entry = ctk.CTkEntry(
+            seed_row,
+            textvariable=self.recruit_variant_seed_var,
+            height=sz(30),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+            placeholder_text="Optional AI direction: shorter · chill · punchier…",
+        )
+        self.recruit_variant_seed_entry.pack(fill="x")
+
+        # Primary AI — NO auto-save
+        self._pack_primary_cta(
+            parent,
+            "AI variant  ·  F6",
+            lambda: self.generate_recruit_variant(n=1, save_as_new=False),
+            tip_text="Rewrite into Generated line only. Use Save / Save as new when you like it.",
+        )
+        self.recruit_copy_btn = None
+
+        def _recruit_more(fr):
+            r = ctk.CTkFrame(fr, fg_color="transparent")
+            r.pack(fill="x", padx=pad(10), pady=pad(8))
+            ctk.CTkButton(
+                r, text="3 variants", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=lambda: self.generate_recruit_variant(n=3, save_as_new=False),
+            ).pack(side="left", padx=(0, pad(4)))
+            ctk.CTkButton(
+                r, text="Fit to limit", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.ai_fit_recruitment,
+            ).pack(side="left", padx=(0, pad(4)))
+            ctk.CTkButton(
+                r, text="Open file", height=sz(30), font=f_ui(12),
+                fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+                command=self.recruit_open_file,
+            ).pack(side="left")
+
+        self._pack_more_block(parent, "recruit", _recruit_more)
+        self._refresh_recruit_ui(load_editor=True)
         self.update_counter()
 
     def _build_noise_panel(self, parent):
         self._job_card_header(
-            parent, "NOISE — NOT GAME-RELATED",
-            "Calibrate from sane small talk to pure mental chaos. Any topic.",
+            parent, "NOISE",
+            "Non-game chatter. Or a clean dad joke.",
             accent=C["warn"],
         )
         slide = ctk.CTkFrame(parent, fg_color="transparent")
-        slide.pack(fill="x", padx=pad(14), pady=(pad(2), pad(6)))
+        slide.pack(fill="x", padx=pad(14), pady=(pad(2), pad(4)))
         ctk.CTkLabel(slide, text="Sane", font=f_ui(11), text_color=C["muted"]).pack(side="left")
         self.noise_level_label = ctk.CTkLabel(
             slide,
@@ -3354,41 +4112,107 @@ class GamersChatHelper:
             command=self.on_noise_level_change,
         )
         self.noise_slider.set(int(self.noise_level_var.get()))
-        self.noise_slider.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+        self.noise_slider.pack(fill="x", padx=pad(14), pady=(0, pad(2)))
         self.noise_hint = ctk.CTkLabel(
             parent,
             text=NOISE_LEVEL_HINTS.get(int(self.noise_level_var.get()), ""),
             font=f_ui(11), text_color=C["faint"], anchor="w", wraplength=640, justify="left",
         )
-        self.noise_hint.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
-        noise_btns = ctk.CTkFrame(parent, fg_color="transparent")
-        noise_btns.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
-        chaos_btn = ctk.CTkButton(
-            noise_btns, text="Write chaos line", height=sz(42), font=f_ui(14, "bold"),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
-            command=self.generate_noise,
+        self.noise_hint.pack(fill="x", padx=pad(14), pady=(0, pad(4)))
+
+        self._pack_primary_cta(
+            parent, "Write chaos  ·  F6", self.generate_noise,
+            color=C["surface"], hover=C["hover"],
+            tip_text="Non-game noise at the slider level → Generated line → Copy.",
         )
-        chaos_btn.pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
-        tip(
-            chaos_btn,
-            "Random non-game chat noise. Intensity follows the Sane → Mental slider above.",
-        )
-        dad_btn = ctk.CTkButton(
-            noise_btns, text="Dad joke", height=sz(42), width=sz(120), font=f_ui(14, "bold"),
+        # Dad joke as clear second primary (not buried)
+        dad = ctk.CTkButton(
+            parent, text="Dad joke", height=sz(36), font=f_ui(13, "bold"),
             fg_color=C["info"], hover_color="#0ea5e9", text_color="#041018",
             command=self.generate_dad_joke,
         )
-        dad_btn.pack(side="left")
-        tip(
-            dad_btn,
-            "Always clean family-friendly joke · max 150 characters · not game-related.\n"
-            "Ignores the chaos slider.",
+        dad.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
+        tip(dad, "Always clean · max 150 chars · ignores chaos slider.")
+
+    def _pack_primary_cta(
+        self,
+        parent,
+        text: str,
+        command,
+        *,
+        color: str = None,
+        hover: str = None,
+        tip_text: str = "",
+        text_color: str = None,
+    ):
+        """Single full-width primary action for an intent panel."""
+        color = color or C["accent"]
+        hover = hover or C["accent_h"]
+        kw = dict(
+            text=text,
+            height=sz(44),
+            font=f_ui(15, "bold"),
+            fg_color=color,
+            hover_color=hover,
+            command=command,
         )
-        ctk.CTkLabel(
-            parent,
-            text="Dad joke: always clean · max 150 characters · not game-related",
-            font=f_ui(11), text_color=C["faint"],
-        ).pack(anchor="w", padx=pad(14), pady=(0, pad(10)))
+        if text_color:
+            kw["text_color"] = text_color
+        btn = ctk.CTkButton(parent, **kw)
+        btn.pack(fill="x", padx=pad(14), pady=(pad(4), pad(8)))
+        if tip_text:
+            tip(btn, tip_text)
+        return btn
+
+    def _pack_more_block(self, parent, key: str, build_extras):
+        """
+        Collapsed 'More tools' section — secondary actions hidden by default.
+        build_extras(frame) packs widgets into the expandable frame.
+        """
+        if not hasattr(self, "_more_open"):
+            self._more_open: dict[str, bool] = {}
+        self._more_open.setdefault(key, False)
+
+        wrap = ctk.CTkFrame(parent, fg_color="transparent")
+        wrap.pack(fill="x", padx=pad(14), pady=(0, pad(10)))
+
+        toggle = ctk.CTkButton(
+            wrap,
+            text="▸ More tools",
+            height=sz(28),
+            font=f_ui(12),
+            fg_color="transparent",
+            hover_color=C["hover"],
+            text_color=C["muted"],
+            anchor="w",
+        )
+        toggle.pack(fill="x")
+
+        extras = ctk.CTkFrame(wrap, fg_color=C["surface"], corner_radius=10)
+        # built but not packed until open
+        try:
+            build_extras(extras)
+        except Exception:
+            pass
+
+        def _apply():
+            open_ = bool(self._more_open.get(key))
+            toggle.configure(text="▾ More tools" if open_ else "▸ More tools")
+            try:
+                extras.pack_forget()
+            except Exception:
+                pass
+            if open_:
+                extras.pack(fill="x", pady=(pad(4), 0))
+
+        def _toggle():
+            self._more_open[key] = not bool(self._more_open.get(key))
+            _apply()
+
+        toggle.configure(command=_toggle)
+        tip(toggle, "Secondary actions — keep the main button for daily use.")
+        _apply()
+        return wrap
 
     def _job_card_header(self, parent, title: str, subtitle: str, accent: str = None):
         accent = accent or C["accent"]
@@ -4207,6 +5031,9 @@ class GamersChatHelper:
             "Keeps config; reloads code. Also available in the header (right side).",
         )
 
+        # ---- LM Studio (local or remote OpenAI-compatible server) ----
+        self._build_lm_setup_panel(tab)
+
         a11y = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
         a11y.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
         ctk.CTkLabel(
@@ -4248,7 +5075,7 @@ class GamersChatHelper:
         tip(
             self.house_style_box,
             "Examples:\n"
-            "• Guild: The Defiants · chill PvE · Discord required\n"
+            "• Guild: [your name] · chill PvE · Discord required\n"
             "• Never say mythic+ or CZ unless I pick that content\n"
             "• Prefer “LFG” over “looking for group”\n"
             "Injected into AI prompts for this game (not dad jokes / pure noise).",
@@ -4420,10 +5247,12 @@ class GamersChatHelper:
             tips, text="QUICK SETUP", font=f_ui(10, "bold"), text_color=C["faint"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(6)))
         for line in (
-            "• Local AI: LM Studio + model + Local Server → header “AI · on” (uses 127.0.0.1)",
+            "• LM Studio (above): Local or Remote host · Test (green/red) · model dropdown",
+            "• Default model = currently loaded model in LM Studio (first in /v1/models)",
+            "• Per-game settings: chat/market boxes, LFG, economy, macros, mood — saved separately",
+            "• Steam games show Players · count; non-Steam (e.g. WoW) show Players · n/a",
             "• AI off? Write still works — offline packs for LFG, activity, noise, replies",
             "• House style (above): per-game guild/slang notes fed into AI prompts",
-            "• “Players · …” = Steam concurrent players — chart marks peak/min with times",
             "• Sampling is set BY THIS APP per job — leave LM Studio defaults alone",
             "• Steam log: steam_players_log.txt next to the app (TSV) for Excel/analysis",
             "• Restart (top-right) reloads after code updates · hover controls for tips",
@@ -4439,6 +5268,414 @@ class GamersChatHelper:
             tips, text=f"Chat Helper v{APP_VERSION}", font=f_ui(11), text_color=C["faint"],
         ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(14)))
         self.root.after(400, self.refresh_steam_chart)
+
+    def _build_lm_setup_panel(self, tab):
+        """Setup → LM Studio: Local/Remote host, green/red test, model dropdown."""
+        lm = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+        lm.pack(fill="x", padx=pad(12), pady=(0, pad(6)))
+        self.lm_setup_frame = lm
+
+        ctk.CTkLabel(
+            lm, text="LM STUDIO · LOCAL AI", font=f_ui(10, "bold"), text_color=C["faint"],
+        ).pack(anchor="w", padx=pad(14), pady=(pad(12), pad(2)))
+        ctk.CTkLabel(
+            lm,
+            text="OpenAI-compatible server. Local = this PC · Remote = another machine’s IP/hostname.",
+            font=f_ui(12), text_color=C["muted"], anchor="w",
+        ).pack(fill="x", padx=pad(14), pady=(0, pad(8)))
+
+        mode_row = ctk.CTkFrame(lm, fg_color="transparent")
+        mode_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        ctk.CTkLabel(
+            mode_row, text="Mode", font=f_ui(11, "bold"), text_color=C["muted"], width=sz(72),
+            anchor="w",
+        ).pack(side="left")
+        self.lm_mode_seg = ctk.CTkSegmentedButton(
+            mode_row,
+            values=list(LM_MODE_OPTIONS),
+            font=f_ui(12, "bold"),
+            height=sz(30),
+            selected_color=C["accent"],
+            selected_hover_color=C["accent_h"],
+            unselected_color=C["surface"],
+            unselected_hover_color=C["hover"],
+            command=self.on_lm_mode_change,
+            variable=self.lm_mode_var,
+        )
+        self.lm_mode_seg.set(self.lm_mode_var.get() if self.lm_mode_var.get() in LM_MODE_OPTIONS else "Local")
+        self.lm_mode_seg.pack(side="left", fill="x", expand=True)
+        tip(
+            self.lm_mode_seg,
+            "Local — LM Studio on this PC (127.0.0.1:1234).\n"
+            "Remote — LM Studio on another PC; enter that host:port below.\n"
+            "Remote needs LM Studio server listening on the LAN (and firewall open).",
+        )
+
+        host_row = ctk.CTkFrame(lm, fg_color="transparent")
+        host_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        ctk.CTkLabel(
+            host_row, text="Host", font=f_ui(11, "bold"), text_color=C["muted"], width=sz(72),
+            anchor="w",
+        ).pack(side="left")
+        self.lm_host_entry = ctk.CTkEntry(
+            host_row,
+            textvariable=self.lm_host_var,
+            height=sz(32),
+            font=f_ui(13),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+            placeholder_text="127.0.0.1:1234  or  192.168.1.50:1234",
+        )
+        self.lm_host_entry.pack(side="left", fill="x", expand=True)
+        self.lm_host_entry.bind("<Return>", lambda e: self.test_lm_connection())
+        self.lm_host_entry.bind("<FocusOut>", lambda e: self._sync_api_url_from_ui(save=True))
+        tip(
+            self.lm_host_entry,
+            "Examples:\n"
+            "• 127.0.0.1:1234  (local default)\n"
+            "• 192.168.1.42:1234  (LAN remote)\n"
+            "• http://my-pc:1234  (also OK)\n"
+            "Port is usually 1234 in LM Studio → Developer / Local Server.",
+        )
+
+        key_row = ctk.CTkFrame(lm, fg_color="transparent")
+        key_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        ctk.CTkLabel(
+            key_row, text="API key", font=f_ui(11, "bold"), text_color=C["muted"], width=sz(72),
+            anchor="w",
+        ).pack(side="left")
+        self.lm_api_key_entry = ctk.CTkEntry(
+            key_row,
+            textvariable=self.lm_api_key_var,
+            height=sz(32),
+            font=f_ui(13),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+            placeholder_text="Optional (if LM Studio server requires one)",
+            show="•",
+        )
+        self.lm_api_key_entry.pack(side="left", fill="x", expand=True)
+        tip(
+            self.lm_api_key_entry,
+            "Usually blank for local LM Studio.\n"
+            "If you set an API key in LM Studio server settings, paste it here.",
+        )
+
+        model_row = ctk.CTkFrame(lm, fg_color="transparent")
+        model_row.pack(fill="x", padx=pad(14), pady=(0, pad(6)))
+        ctk.CTkLabel(
+            model_row, text="Model", font=f_ui(11, "bold"), text_color=C["muted"], width=sz(72),
+            anchor="w",
+        ).pack(side="left")
+        initial_models = [self.lm_model_var.get()] if (self.lm_model_var.get() or "").strip() else ["(connect to list)"]
+        self.lm_model_menu = ctk.CTkOptionMenu(
+            model_row,
+            values=initial_models,
+            variable=self.lm_model_var,
+            height=sz(32),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            button_color=C["hover"],
+            button_hover_color=C["line"],
+            dropdown_fg_color=C["elevated"],
+            command=self.on_lm_model_change,
+        )
+        if (self.lm_model_var.get() or "").strip():
+            self.lm_model_menu.set(self.lm_model_var.get())
+        else:
+            self.lm_model_menu.set(initial_models[0])
+        self.lm_model_menu.pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
+        tip(
+            self.lm_model_menu,
+            "Models reported by LM Studio /v1/models.\n"
+            "Defaults to the currently loaded model (first in the list).\n"
+            "Use Test connection or Refresh to reload the list.",
+        )
+        self.lm_refresh_models_btn = ctk.CTkButton(
+            model_row, text="Refresh", height=sz(32), width=sz(84), font=f_ui(12),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            command=self.refresh_lm_models,
+        )
+        self.lm_refresh_models_btn.pack(side="left")
+        tip(self.lm_refresh_models_btn, "Re-query LM Studio for loaded models.")
+
+        action_row = ctk.CTkFrame(lm, fg_color="transparent")
+        action_row.pack(fill="x", padx=pad(14), pady=(0, pad(10)))
+        self.lm_test_btn = ctk.CTkButton(
+            action_row, text="Test connection", height=sz(34), width=sz(140),
+            font=f_ui(13, "bold"),
+            fg_color=C["accent"], hover_color=C["accent_h"],
+            command=self.test_lm_connection,
+        )
+        self.lm_test_btn.pack(side="left")
+        tip(
+            self.lm_test_btn,
+            "Hits GET /v1/models on the host above.\n"
+            "Green = reachable · Red = offline / error.\n"
+            "Also fills the model dropdown (default = loaded model).",
+        )
+
+        status_box = ctk.CTkFrame(action_row, fg_color=C["surface"], corner_radius=10)
+        status_box.pack(side="left", fill="x", expand=True, padx=(pad(10), 0))
+        status_inner = ctk.CTkFrame(status_box, fg_color="transparent")
+        status_inner.pack(fill="x", padx=pad(10), pady=pad(6))
+        self.lm_status_dot = ctk.CTkLabel(
+            status_inner, text="●", font=f_ui(16, "bold"), text_color=C["faint"], width=sz(22),
+        )
+        self.lm_status_dot.pack(side="left")
+        self.lm_status_label = ctk.CTkLabel(
+            status_inner,
+            text="Not tested yet — click Test connection",
+            font=f_ui(12),
+            text_color=C["muted"],
+            anchor="w",
+        )
+        self.lm_status_label.pack(side="left", fill="x", expand=True, padx=(pad(4), 0))
+        tip(
+            status_box,
+            "Green = LM Studio server online.\n"
+            "Red = cannot reach host (server off, wrong IP, firewall, or no model loaded).",
+        )
+
+        # Seed status from last known pulse if available
+        if getattr(self, "_llm_online", None) is True:
+            model = (self.lm_model_var.get() or "").strip() or "ready"
+            self._set_lm_conn_status(True, f"Online · {model}")
+        elif getattr(self, "_llm_online", None) is False:
+            self._set_lm_conn_status(False, "Offline — start LM Studio Local Server")
+
+    def open_lm_setup(self):
+        """Jump to Setup tab and focus LM Studio panel (header AI chip)."""
+        try:
+            self.tabview.set("Setup")
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "lm_host_entry"):
+                self.lm_host_entry.focus_set()
+        except Exception:
+            pass
+
+    def on_lm_mode_change(self, value: str = ""):
+        mode = (value or self.lm_mode_var.get() or "Local").strip()
+        if mode not in LM_MODE_OPTIONS:
+            mode = "Local"
+        self.lm_mode_var.set(mode)
+        self.lm_mode = mode
+        host = (self.lm_host_var.get() or "").strip()
+        if mode == "Local":
+            # Prefer local default when switching back unless already local-looking
+            if not host or not (
+                host.startswith("127.0.0.1")
+                or "localhost" in host.lower()
+                or host.startswith("http://127.0.0.1")
+            ):
+                if not host or self._host_looks_remote(host):
+                    self.lm_host_var.set(LM_DEFAULT_LOCAL_HOST)
+        self._sync_api_url_from_ui(save=True)
+        self._set_lm_conn_status(None, "Mode changed — test connection")
+
+    def on_lm_model_change(self, value: str = ""):
+        model = (value or self.lm_model_var.get() or "").strip()
+        if model.startswith("("):
+            return
+        self.lm_model = model
+        self.lm_model_var.set(model)
+        self.save_settings()
+        if getattr(self, "_llm_online", None):
+            self._set_lm_conn_status(True, f"Online · {model}")
+
+    def _host_looks_remote(self, host: str) -> bool:
+        h = (host or "").strip().lower()
+        if not h:
+            return False
+        if "127.0.0.1" in h or "localhost" in h or "[::1]" in h:
+            return False
+        return True
+
+    def _sync_api_url_from_ui(self, save: bool = False):
+        if hasattr(self, "lm_mode_var"):
+            self.lm_mode = self.lm_mode_var.get() if self.lm_mode_var.get() in LM_MODE_OPTIONS else "Local"
+        if hasattr(self, "lm_host_var"):
+            host = (self.lm_host_var.get() or "").strip() or (
+                LM_DEFAULT_LOCAL_HOST if self.lm_mode == "Local" else ""
+            )
+            if host:
+                self.lm_host = host
+                self.api_url = self._api_url_from_host(host)
+        if hasattr(self, "lm_api_key_var"):
+            self.lm_api_key = (self.lm_api_key_var.get() or "").strip()
+        if hasattr(self, "lm_model_var"):
+            m = (self.lm_model_var.get() or "").strip()
+            if m and not m.startswith("("):
+                self.lm_model = m
+        if save:
+            # save_settings calls us again with save=False — no recursion loop
+            try:
+                self.save_settings()
+            except Exception:
+                pass
+
+    def _set_lm_conn_status(self, ok: Optional[bool], message: str):
+        """Green / red connectivity indicator on Setup panel."""
+        if not hasattr(self, "lm_status_dot"):
+            return
+        try:
+            if ok is True:
+                color = C["success"]
+                prefix = "Connected"
+            elif ok is False:
+                color = C["danger"]
+                prefix = "Offline"
+            else:
+                color = C["faint"]
+                prefix = "Unknown"
+            msg = (message or "").strip()
+            if msg and not msg.lower().startswith(prefix.lower()):
+                text = f"{prefix} · {msg}" if ok is not None else msg
+            else:
+                text = msg or prefix
+            self.lm_status_dot.configure(text_color=color)
+            self.lm_status_label.configure(text=text[:120], text_color=color if ok is not None else C["muted"])
+        except Exception:
+            pass
+
+    def _populate_lm_model_menu(
+        self, models: list[str], preferred: str = "", *, online: Optional[bool] = None
+    ):
+        """Fill model dropdown; default to preferred or first loaded model."""
+        models = [m for m in (models or []) if m and not str(m).startswith("(")]
+        self._lm_models_cache = list(models)
+        if not hasattr(self, "lm_model_menu"):
+            if models:
+                if preferred and preferred in models:
+                    self.lm_model = preferred
+                elif not (getattr(self, "lm_model", "") or "").strip():
+                    self.lm_model = models[0]
+                if hasattr(self, "lm_model_var"):
+                    self.lm_model_var.set(self.lm_model)
+            return
+
+        if not models:
+            if online is False:
+                placeholder = "(not connected)"
+            elif online is True:
+                placeholder = "(no model loaded)"
+            else:
+                placeholder = "(connect to list)"
+            try:
+                self.lm_model_menu.configure(values=[placeholder])
+                self.lm_model_menu.set(placeholder)
+                self.lm_model_var.set(placeholder)
+            except Exception:
+                pass
+            return
+
+        pick = (preferred or getattr(self, "lm_model", "") or "").strip()
+        if pick.startswith("("):
+            pick = ""
+        if pick not in models:
+            # Start with the default loaded model (first from LM Studio /v1/models)
+            pick = models[0]
+        self.lm_model = pick
+        try:
+            self.lm_model_menu.configure(values=models)
+            self.lm_model_menu.set(pick)
+            self.lm_model_var.set(pick)
+        except Exception:
+            pass
+
+    def test_lm_connection(self):
+        """Manual connectivity test → green/red + model list."""
+        self._sync_api_url_from_ui(save=False)
+        self._set_lm_conn_status(None, "Testing…")
+        if hasattr(self, "lm_test_btn"):
+            try:
+                self.lm_test_btn.configure(state="disabled", text="Testing…")
+            except Exception:
+                pass
+        gen = getattr(self, "_llm_pulse_gen", 0)
+
+        def work():
+            ok, detail, models = self._probe_llm_server(full=True)
+
+            def apply():
+                if hasattr(self, "lm_test_btn"):
+                    try:
+                        self.lm_test_btn.configure(state="normal", text="Test connection")
+                    except Exception:
+                        pass
+                if ok:
+                    preferred = (self.lm_model_var.get() if hasattr(self, "lm_model_var") else "") or ""
+                    if preferred.startswith("("):
+                        preferred = ""
+                    self._populate_lm_model_menu(models, preferred=preferred, online=True)
+                    model = (self.lm_model_var.get() if hasattr(self, "lm_model_var") else "") or detail
+                    if model.startswith("("):
+                        model = detail or "ready"
+                    self._set_lm_conn_status(True, str(model))
+                    self._llm_online = True
+                    # Update header chip immediately
+                    if hasattr(self, "llm_dot"):
+                        try:
+                            self.llm_dot.configure(text="AI · on", text_color=C["success"])
+                            tip(
+                                self.llm_dot,
+                                "LM STUDIO AI SERVER — online\n"
+                                f"Model: {model}\n"
+                                f"Mode: {getattr(self, 'lm_mode', 'Local')}\n"
+                                f"API: {self._normalize_api_url(self.api_url)}\n"
+                                "Click → Setup to change host / model.",
+                            )
+                        except Exception:
+                            pass
+                    self.save_settings()
+                    self.show_toast(f"LM Studio · {model}", kind="ok")
+                else:
+                    self._llm_online = False
+                    self._populate_lm_model_menu([], online=False)
+                    self._set_lm_conn_status(False, detail or "unreachable")
+                    if hasattr(self, "llm_dot"):
+                        try:
+                            self.llm_dot.configure(text="AI · off", text_color=C["danger"])
+                        except Exception:
+                            pass
+                    self.show_toast(f"LM Studio offline · {detail}", kind="error")
+                # Keep periodic pulse in sync
+                _ = gen
+
+            self.schedule_ui(apply)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def refresh_lm_models(self):
+        """Re-fetch model list without full toast spam if already online."""
+        self._sync_api_url_from_ui(save=False)
+        self._set_lm_conn_status(None, "Refreshing models…")
+
+        def work():
+            ok, detail, models = self._probe_llm_server(full=True)
+
+            def apply():
+                if ok:
+                    preferred = (self.lm_model_var.get() if hasattr(self, "lm_model_var") else "") or ""
+                    if preferred.startswith("("):
+                        preferred = ""
+                    self._populate_lm_model_menu(models, preferred=preferred, online=True)
+                    model = self.lm_model_var.get() if hasattr(self, "lm_model_var") else detail
+                    self._set_lm_conn_status(True, str(model))
+                    self._llm_online = True
+                    self.save_settings()
+                else:
+                    self._populate_lm_model_menu([], online=False)
+                    self._set_lm_conn_status(False, detail or "unreachable")
+                    self._llm_online = False
+
+            self.schedule_ui(apply)
+
+        threading.Thread(target=work, daemon=True).start()
 
 
     # =====================================================================
@@ -4571,6 +5808,7 @@ class GamersChatHelper:
         self.root.after(250, self._quit_for_restart)
 
     def _quit_for_restart(self):
+        self._alive = False
         try:
             self.root.destroy()
         except Exception:
@@ -4634,15 +5872,28 @@ class GamersChatHelper:
             return f"{n / 1000:.1f}k".replace(".0k", "k")
         return str(n)
 
-    def steam_appid(self) -> Optional[int]:
-        raw = self.profile().get("steam_appid")
+    def steam_appid(self, game: Optional[str] = None) -> Optional[int]:
+        """
+        Steam AppID for concurrent-player polling.
+        Per-game override in game_settings wins; None = non-Steam (WoW, Custom, …).
+        """
+        game = game or (self.game_var.get() if hasattr(self, "game_var") else None)
+        bag = (getattr(self, "game_settings", {}) or {}).get(game or "", {}) or {}
+        if "steam_appid" in bag:
+            raw = bag.get("steam_appid")
+        else:
+            prof = GAME_PROFILES.get(game or "") or self.profile()
+            raw = prof.get("steam_appid")
         try:
-            return int(raw) if raw else None
+            return int(raw) if raw not in (None, "", 0, "0") else None
         except Exception:
             return None
 
+    def is_steam_game(self, game: Optional[str] = None) -> bool:
+        return self.steam_appid(game) is not None
+
     def _set_steam_label(self, text: str, color: str = None):
-        if not hasattr(self, "steam_dot"):
+        if not self._tk_alive() or not hasattr(self, "steam_dot"):
             return
         try:
             self.steam_dot.configure(text=text, text_color=color or C["muted"])
@@ -4752,28 +6003,34 @@ class GamersChatHelper:
 
     def pulse_steam_players(self):
         """Poll Steam GetNumberOfCurrentPlayers for the selected game (no API key)."""
+        if not self._tk_alive():
+            return
         self._steam_pulse_gen += 1
         gen = self._steam_pulse_gen
         appid = self.steam_appid()
-        game_name = self.game_var.get() if hasattr(self, "game_var") else ""
+        try:
+            game_name = self.game_var.get() if hasattr(self, "game_var") else ""
+        except Exception:
+            game_name = ""
 
         if not appid:
             self._steam_player_count = None
             self._set_steam_label("Players · n/a", C["faint"])
             self._steam_history = []
-            self.root.after(0, self.draw_steam_chart)
-            self.root.after(0, self._update_steam_region_now_label)
+            self.schedule_ui(self.draw_steam_chart)
+            self.schedule_ui(self._update_steam_region_now_label)
             return
 
         self._set_steam_label("Players · …", C["faint"])
 
         def check():
-            if gen != self._steam_pulse_gen:
+            # Worker thread: network only — never touch Tk/widgets/vars here
+            if gen != self._steam_pulse_gen or not getattr(self, "_alive", False):
                 return
             count, label, color = self._fetch_steam_player_count(appid)
 
             def apply():
-                if gen != self._steam_pulse_gen:
+                if gen != self._steam_pulse_gen or not self._tk_alive():
                     return
                 self._steam_player_count = count
                 self._set_steam_label(label, color)
@@ -4781,25 +6038,21 @@ class GamersChatHelper:
                 if count is not None:
                     self._note_steam_session_peak(count)
                     self._maybe_log_steam_players(appid, game_name, count)
-                # Live header refresh
-                if gen == self._steam_pulse_gen:
-                    self.root.after(
-                        STEAM_LIVE_INTERVAL_S * 1000,
+                # Live header refresh (main thread only)
+                if gen == self._steam_pulse_gen and self._tk_alive():
+                    self.schedule_ui(
                         lambda g=gen: self._steam_refresh_if_current(g),
+                        delay_ms=STEAM_LIVE_INTERVAL_S * 1000,
                     )
 
-            try:
-                self.root.after(0, apply)
-            except Exception:
-                self._steam_player_count = count
-                self._set_steam_label(label, color)
-                if count is not None:
-                    self._note_steam_session_peak(count)
-                    self._maybe_log_steam_players(appid, game_name, count)
+            # If schedule fails (app closed), drop the result — do not fall back to Tk from this thread
+            self.schedule_ui(apply)
 
         threading.Thread(target=check, daemon=True).start()
 
     def _steam_refresh_if_current(self, gen: int):
+        if not self._tk_alive():
+            return
         if gen == self._steam_pulse_gen:
             self.pulse_steam_players()
 
@@ -4824,11 +6077,19 @@ class GamersChatHelper:
         self.show_toast(f"Steam log every {mins} min", kind="info")
 
     def _maybe_log_steam_players(self, appid: int, game: str, count: int):
-        """Append to steam_players_log.txt on cadence (default 15 min)."""
-        if hasattr(self, "steam_log_enabled") and not self.steam_log_enabled.get():
+        """Append to steam_players_log.txt on cadence (default 15 min). Main-thread only."""
+        if not self._tk_alive():
+            return
+        try:
+            if hasattr(self, "steam_log_enabled") and not self.steam_log_enabled.get():
+                return
+        except Exception:
             return
         now = time.time()
-        interval = self._steam_log_interval_sec()
+        try:
+            interval = self._steam_log_interval_sec()
+        except Exception:
+            interval = 15 * 60
         last = self._steam_last_log_ts.get(appid, 0)
         # Always allow first sample this session quickly for chart feedback
         if last and (now - last) < interval:
@@ -4849,12 +6110,16 @@ class GamersChatHelper:
         except Exception:
             pass
         # Update in-memory series for chart (current game only)
-        if appid == self.steam_appid():
+        try:
+            current_app = self.steam_appid()
+        except Exception:
+            current_app = None
+        if appid == current_app:
             self._steam_history.append((now, int(count)))
             # Cap memory (~1 week at 15 min)
             if len(self._steam_history) > 800:
                 self._steam_history = self._steam_history[-800:]
-            self.root.after(0, self.draw_steam_chart)
+            self.schedule_ui(self.draw_steam_chart)
 
     def _read_steam_log_rows(self, appid: Optional[int] = None) -> list[tuple[float, int]]:
         """All log samples for an appid: (unix, players), sorted by time."""
@@ -5602,36 +6867,66 @@ class GamersChatHelper:
             self.game_icon_label.configure(image=None, text="◆", font=f_ui(12), text_color=self.accent())
 
     def on_game_changed(self, game: str = None, persist: bool = True):
+        """
+        Switch active game and restore that game's settings bag.
+        OptionMenu already sets game_var before calling us — track previous via
+        _active_game_for_settings so we don't lose the game we're leaving.
+        """
         if game is None:
-            game = self.game_var.get()
-        elif game in GAME_PROFILES and self.game_var.get() != game:
-            self.game_var.set(game)
-        prof = self.profile()
-        lim = self.limit()
-        self.limit_badge.configure(text=f"{lim} max")
-        self.game_pill.configure(text=prof["short"], fg_color=C["elevated"], text_color=self.accent())
-        self._refresh_game_icon()
+            game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        if game not in GAME_PROFILES:
+            game = self.default_game if self.default_game in GAME_PROFILES else "The Quinfall"
 
-        acts = prof["activities"]
-        if hasattr(self, "activity_menu") and self.activity_menu is not None:
+        prev = getattr(self, "_active_game_for_settings", None)
+
+        # Snapshot the game we're leaving (regions, LFG, economy, macros, …)
+        if prev and prev != game:
             try:
-                self.activity_menu.configure(values=acts)
+                # Ensure game_var still points at prev for snapshot of UI... 
+                # OptionMenu already flipped game_var to *new* game, so snapshot
+                # using stored prev key but LIVE widgets currently show prev game's
+                # values until we apply. Actually after OptionMenu change, widgets
+                # still hold previous game's LFG/regions until we apply — game_var
+                # is new. Snapshot must write under *prev* key from current widgets.
+                self._snapshot_game_settings(prev)
             except Exception:
                 pass
-        if self.activity_var.get() not in acts:
-            self.activity_var.set(acts[0])
 
-        # Restore this game's preferred LFG target + location
-        if hasattr(self, "lfg_target_var"):
-            names = self.lfg_target_names(game)
-            if hasattr(self, "lfg_target_menu"):
-                self.lfg_target_menu.configure(values=names)
-            preferred = (self.lfg_defaults or {}).get(game)
-            self.lfg_target_var.set(self._resolve_lfg_target(game, preferred))
-        if hasattr(self, "lfg_location_var"):
-            loc_pref = (getattr(self, "lfg_location_defaults", {}) or {}).get(game)
-            self.lfg_location_var.set(self._resolve_lfg_location(game, loc_pref))
-            self.sync_lfg_location_if_needed()
+        if hasattr(self, "game_var") and self.game_var.get() != game:
+            self.game_var.set(game)
+
+        prof = self.profile()
+        lim = self.limit()
+        if hasattr(self, "limit_badge"):
+            self.limit_badge.configure(text=f"{lim} max")
+        if hasattr(self, "game_pill"):
+            self.game_pill.configure(text=prof["short"], fg_color=C["elevated"], text_color=self.accent())
+        self._refresh_game_icon()
+
+        # Restore full per-game bag (regions, LFG, economy, macros, mood, …)
+        try:
+            self._apply_game_settings(game)
+        except Exception:
+            # Fallback: at least swap activity list + LFG targets
+            acts = prof["activities"]
+            if hasattr(self, "activity_menu") and self.activity_menu is not None:
+                try:
+                    self.activity_menu.configure(values=acts)
+                except Exception:
+                    pass
+            if hasattr(self, "activity_var") and self.activity_var.get() not in acts:
+                self.activity_var.set(acts[0])
+            if hasattr(self, "lfg_target_var"):
+                names = self.lfg_target_names(game)
+                if hasattr(self, "lfg_target_menu"):
+                    self.lfg_target_menu.configure(values=names)
+                preferred = (self.lfg_defaults or {}).get(game)
+                self.lfg_target_var.set(self._resolve_lfg_target(game, preferred))
+            if hasattr(self, "lfg_location_var"):
+                loc_pref = (getattr(self, "lfg_location_defaults", {}) or {}).get(game)
+                self.lfg_location_var.set(self._resolve_lfg_location(game, loc_pref))
+                self.sync_lfg_location_if_needed()
+            self._active_game_for_settings = game
 
         self.rebuild_quick_buttons()
         if hasattr(self, "msg_textbox"):
@@ -5639,21 +6934,31 @@ class GamersChatHelper:
         self._update_quick_out_meter()
         self.refresh_hud_line()
         # Persist previous game's house style, then load this game's
-        self._sync_house_style_from_ui()
+        # House style sync uses _house_style_game (previous editor target)
+        try:
+            if prev:
+                self._house_style_game = prev
+            self._sync_house_style_from_ui()
+        except Exception:
+            pass
         self._load_house_style_into_ui(game)
         if hasattr(self, "house_style_hint"):
             try:
                 short = (GAME_PROFILES.get(game) or {}).get("short", game)
-                self.house_style_hint.configure(text=f"Editing style for {short}")
+                steam = self.steam_appid(game)
+                steam_bit = f" · Steam {steam}" if steam else " · non-Steam"
+                self.house_style_hint.configure(text=f"Editing style for {short}{steam_bit}")
             except Exception:
                 pass
-        # Refresh Steam count + chart for the new game
+        # Refresh Steam count + chart for the new game (n/a for non-Steam)
         self.load_steam_history_from_log()
         self.pulse_steam_players()
         self.root.after(100, self.draw_steam_chart)
         if persist:
             self.save_settings()
-            self.set_status(f"{prof['short']} voice locked in.")
+            steam = self.steam_appid(game)
+            tag = f"Steam {steam}" if steam else "non-Steam"
+            self.set_status(f"{prof['short']} · {tag} · settings restored")
 
     def on_heat_change(self, value):
         level = int(round(float(value)))
@@ -5929,11 +7234,9 @@ class GamersChatHelper:
             self.set_gen_text(text, also_ai=False, also_hud=False)
         else:
             self._update_quick_out_meter()
-        # Flash Copy buttons (editor + sticky footer)
-        for attr in ("sticky_copy_btn", "editor_copy_btn"):
-            btn = getattr(self, attr, None)
-            if btn is None:
-                continue
+        # Flash sticky Copy (the only paste path)
+        btn = getattr(self, "sticky_copy_btn", None)
+        if btn is not None:
             try:
                 btn.configure(text="✓ Copied")
                 self.root.after(
@@ -5947,7 +7250,7 @@ class GamersChatHelper:
         return True
 
     def show_toast(self, message: str, kind: str = "ok"):
-        if not hasattr(self, "toast"):
+        if not self._tk_alive() or not hasattr(self, "toast"):
             return
         try:
             if not self.toast.winfo_exists():
@@ -5971,7 +7274,13 @@ class GamersChatHelper:
                 self.root.after_cancel(self._toast_job)
             except Exception:
                 pass
-        self._toast_job = self.root.after(2000, self._hide_toast)
+            self._toast_job = None
+        # schedule_ui returns bool; keep job id via root.after only when alive
+        if self._tk_alive():
+            try:
+                self._toast_job = self.root.after(2000, self._hide_toast)
+            except Exception:
+                self._toast_job = None
 
     def _hide_toast(self):
         try:
@@ -6000,11 +7309,16 @@ class GamersChatHelper:
         )
 
     def _tip_rotate(self):
-        if not self._busy and hasattr(self, "status_bar"):
-            cur = self.status_bar.cget("text")
-            if cur in TIPS or cur in HYPE_LINES or not cur:
-                self.status_bar.configure(text=random.choice(TIPS))
-        self.root.after(16000, self._tip_rotate)
+        if not self._tk_alive():
+            return
+        try:
+            if not self._busy and hasattr(self, "status_bar"):
+                cur = self.status_bar.cget("text")
+                if cur in TIPS or cur in HYPE_LINES or not cur:
+                    self.status_bar.configure(text=random.choice(TIPS))
+        except Exception:
+            pass
+        self.schedule_ui(self._tip_rotate, delay_ms=16000)
 
     # =====================================================================
     # Fun
@@ -6047,7 +7361,7 @@ class GamersChatHelper:
             return
         if hasattr(self, "quick_they_said"):
             self.quick_they_said.focus_set()
-        self.show_toast("Paste what they said, then Write clap-back", kind="info")
+        self.show_toast("Paste what they said, then Write reply", kind="info")
 
     def jump_recruit_ai(self):
         try:
@@ -6074,10 +7388,33 @@ class GamersChatHelper:
             engines = []
             if _HAS_TESS:
                 engines.append("Tesseract")
-            engines.append("local VL (LM Studio)")
+            model = self._selected_lm_model() if hasattr(self, "_selected_lm_model") else "LM Studio"
+            engines.append(f"VL ({model})")
             eng = " · ".join(engines)
-            return f"Chat area set · {w}×{h}px @ ({r['left']},{r['top']})  ·  OCR: {eng}"
-        return "Chat area not set · click Calibrate chat area, then drag over your game chat"
+            mode = getattr(self, "lm_mode", "Local")
+            if hasattr(self, "lm_mode_var"):
+                try:
+                    mode = self.lm_mode_var.get() or mode
+                except Exception:
+                    pass
+            return (
+                f"Chat area set · {w}×{h}px @ ({r['left']},{r['top']})  ·  "
+                f"OCR: {eng}  ·  {mode}"
+            )
+        return "Chat area not set · click Set chat box on screen, then drag over your game chat"
+
+    def open_last_chat_capture(self):
+        path = LAST_OCR_PATH
+        if not os.path.isfile(path):
+            self.show_toast("No chat grab yet — use Grab chat first", kind="warn")
+            return
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                subprocess.Popen(["explorer", "/select,", path])
+            except Exception:
+                self.show_toast(path, kind="info")
 
     def _refresh_ocr_status(self, extra: str = ""):
         if not hasattr(self, "ocr_status"):
@@ -6114,20 +7451,33 @@ class GamersChatHelper:
 
     def _on_chat_region_saved(self, region: dict):
         self.chat_region = region
+        # Bind region to the active game (each game keeps its own OCR box)
+        try:
+            g = self.game_var.get() if hasattr(self, "game_var") else None
+            self._snapshot_game_settings(g)
+        except Exception:
+            pass
         self.save_settings()
         self._refresh_ocr_status("saved")
-        self.show_toast("Chat area calibrated", kind="ok")
+        short = (self.profile() or {}).get("short", "game")
+        self.show_toast(f"Chat area saved · {short}", kind="ok")
         self.set_status(
-            f"Chat region {region['right'] - region['left']}×{region['bottom'] - region['top']}"
+            f"Chat region {region['right'] - region['left']}×{region['bottom'] - region['top']} · {short}"
         )
 
     def _on_market_region_saved(self, region: dict):
         self.market_region = region
+        try:
+            g = self.game_var.get() if hasattr(self, "game_var") else None
+            self._snapshot_game_settings(g)
+        except Exception:
+            pass
         self.save_settings()
         self._refresh_market_status("saved")
-        self.show_toast("Market area calibrated", kind="ok")
+        short = (self.profile() or {}).get("short", "game")
+        self.show_toast(f"Market area saved · {short}", kind="ok")
         self.set_status(
-            f"Market region {region['right'] - region['left']}×{region['bottom'] - region['top']}"
+            f"Market region {region['right'] - region['left']}×{region['bottom'] - region['top']} · {short}"
         )
 
     def _start_region_calibrate(
@@ -6275,7 +7625,19 @@ class GamersChatHelper:
             messagebox.showerror("Pillow required", "Install Pillow to capture the screen.")
             return
 
+        # Grab buttons live on Reply panel — keep user on that intent
+        try:
+            if hasattr(self, "generator_intent"):
+                self.generator_intent.set("reply")
+                if hasattr(self, "set_intent"):
+                    self.set_intent("reply")
+                elif hasattr(self, "on_intent_change"):
+                    self.on_intent_change("reply")
+        except Exception:
+            pass
+
         self._ocr_busy = True
+        self._last_ocr_error = ""
         self._refresh_ocr_status("capturing…")
         self.set_status("Grabbing chat area…")
         self.copy_badge.configure(text="ocr…", text_color=C["warn"])
@@ -6289,32 +7651,38 @@ class GamersChatHelper:
             pass
 
         region = dict(self.chat_region)
+        model = self._selected_lm_model()
+        host = getattr(self, "lm_host", "") or self._host_from_api_url(self.api_url)
 
         def work():
             err = None
             text = ""
             engine = ""
             try:
-                time.sleep(0.15)  # let our window drop behind game if needed
+                time.sleep(0.18)  # let our window drop behind game if needed
                 bbox = (
                     int(region["left"]),
                     int(region["top"]),
                     int(region["right"]),
                     int(region["bottom"]),
                 )
+                if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                    raise ValueError(f"invalid chat region bbox {bbox}")
                 img = ImageGrab.grab(bbox=bbox, all_screens=True)
                 try:
                     img.save(LAST_OCR_PATH)
                 except Exception:
                     pass
 
-                # Prefer Tesseract when present (fast); else local VL model
+                # Prefer vision model when configured (remote Qwen-VL etc.); Tesseract as fallback
                 text, engine = self._ocr_image(img)
                 text = self._clean_ocr_text(text)
-                if self.ocr_prefer_last.get():
+                # Always pick a single reply line for Grab+reply / clap-back entry field
+                if self.ocr_prefer_last.get() or and_reply:
                     text = self._ocr_pick_reply_line(text)
             except Exception as e:
                 err = str(e)
+                self._last_ocr_error = err
 
             def done():
                 self._ocr_busy = False
@@ -6326,21 +7694,36 @@ class GamersChatHelper:
 
                 if err:
                     self.show_toast("Capture failed", kind="error")
-                    self._refresh_ocr_status(f"error: {err[:40]}")
+                    self._refresh_ocr_status(f"error: {err[:48]}")
                     self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    messagebox.showerror(
+                        "Grab failed",
+                        f"Could not capture or read chat.\n\n{err}\n\n"
+                        f"Last capture (if any):\n{LAST_OCR_PATH}",
+                    )
                     return
                 if not text:
-                    self.show_toast("No text found — recalibrate or install Tesseract", kind="warn")
-                    self._refresh_ocr_status("empty · try VL model or Tesseract")
+                    detail = (getattr(self, "_last_ocr_error", "") or "").strip()
+                    self.show_toast("No text found — see OCR details", kind="warn")
+                    self._refresh_ocr_status(
+                        f"empty · {detail[:40]}" if detail else "empty · VL/Tesseract failed"
+                    )
                     self.copy_badge.configure(text="ready", text_color=C["muted"])
                     messagebox.showinfo(
                         "OCR empty",
-                        "Couldn't read chat text.\n\n"
-                        "Tips:\n"
-                        "• Recalibrate tighter on the chat log\n"
-                        "• Load a vision model in LM Studio (e.g. Qwen2-VL / Qwen3-VL)\n"
-                        "• Or install Tesseract OCR + pip install pytesseract\n\n"
-                        f"Last capture saved to:\n{LAST_OCR_PATH}",
+                        "Couldn't read chat text from the grab.\n\n"
+                        f"Model: {model}\n"
+                        f"Host: {host}\n"
+                        f"Engine tried: {engine or 'none'}\n"
+                        f"Detail: {detail or '(no error body — empty model reply)'}\n\n"
+                        "Checklist:\n"
+                        "• Setup → Test connection is green\n"
+                        "• Model dropdown = a VL / vision model (e.g. qwen3-vl-8b)\n"
+                        "• In LM Studio that model is loaded + Server running\n"
+                        "• Open last grab — confirm chat text is visible in the PNG\n"
+                        "• Recalibrate tighter on the chat log if the PNG is wrong\n"
+                        "• Remote: GPU busy or cold start can time out — try again\n\n"
+                        f"Last capture:\n{LAST_OCR_PATH}",
                     )
                     return
 
@@ -6351,9 +7734,10 @@ class GamersChatHelper:
                 self.set_status(f"OCR ({engine}): {text[:60]}{'…' if len(text) > 60 else ''}")
                 self.copy_badge.configure(text="ready", text_color=C["muted"])
                 if and_reply:
-                    self.generate_response_from_quick()
+                    # Entry is updated; generate clap-back against that line
+                    self.root.after(50, self.generate_response_from_quick)
 
-            self.root.after(0, done)
+            self.schedule_ui(done)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -6503,7 +7887,7 @@ class GamersChatHelper:
                     except Exception:
                         pass
 
-            self.root.after(0, done)
+            self.schedule_ui(done)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -6547,23 +7931,20 @@ class GamersChatHelper:
     ) -> str:
         if not _HAS_PIL or base64 is None or io is None:
             return ""
-        work = img.convert("RGB")
-        w, h = work.size
-        max_side = 1280  # market UIs need a bit more detail than chat
-        if max(w, h) > max_side:
-            scale = max_side / float(max(w, h))
-            work = work.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-        buf = io.BytesIO()
-        work.save(buf, format="PNG", optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
+        self.api_url = self._normalize_api_url(self.api_url)
+        data_url = self._image_to_data_url(img, max_side=1280, jpeg=True)
 
         item_bit = item if item else "the main item shown in the listings"
         game_bit = game or "this game"
         sampling = self._sampling_payload("economy")
-        self.api_url = self._normalize_api_url(self.api_url)
+        sampling = {
+            "temperature": float(sampling.get("temperature", 0.25)),
+            "top_p": float(sampling.get("top_p", 0.88)),
+            "max_tokens": int(sampling.get("max_tokens", 420)),
+            "stream": False,
+        }
         payload = {
-            "model": "local-model",
+            "model": self._selected_lm_model(),
             "messages": [
                 {
                     "role": "system",
@@ -6602,11 +7983,15 @@ class GamersChatHelper:
             ],
             **sampling,
         }
-        r = requests.post(self.api_url, json=payload, timeout=60)
+        timeout = self._vl_request_timeout()
+        # Economy can take longer on remote 8B VL
+        timeout = (timeout[0], max(timeout[1], 150.0))
+        r = requests.post(
+            self.api_url, json=payload, headers=self._llm_headers(), timeout=timeout
+        )
         if r.status_code != 200:
             return ""
-        content = r.json()["choices"][0]["message"]["content"]
-        return (content or "").strip()
+        return self._extract_chat_message_text(r.json()).strip()
 
     def _economy_text_prompt(self, ocr_text: str, item: str, undercut: float, game: str) -> str:
         item_bit = item if item else "the item in the listings"
@@ -6748,11 +8133,19 @@ class GamersChatHelper:
             self.show_toast("Copied comps", kind="ok")
 
     def _fill_they_said(self, text: str):
+        # CTkEntry is single-line — collapse newlines so clap-back sees one usable string
+        text = (text or "").replace("\r", "\n").strip()
+        if "\n" in text:
+            text = self._ocr_pick_reply_line(text) or " ".join(
+                ln.strip() for ln in text.split("\n") if ln.strip()
+            )
         text = (text or "").strip()
         if hasattr(self, "quick_they_said"):
             self.quick_they_said.delete(0, tk.END)
             self.quick_they_said.insert(0, text)
-        if hasattr(self, "input_statement"):
+        if hasattr(self, "input_statement") and self.input_statement is not getattr(
+            self, "quick_they_said", None
+        ):
             self.input_statement.delete(0, tk.END)
             self.input_statement.insert(0, text)
 
@@ -6772,48 +8165,129 @@ class GamersChatHelper:
         except Exception:
             return img
 
+    def _model_looks_vision(self, model: Optional[str] = None) -> bool:
+        m = (model if model is not None else self._selected_lm_model()).lower()
+        if not m or m.startswith("("):
+            return False
+        keys = ("-vl", "vl-", "vision", "llava", "pixtral", "gemini", "qwen2-vl", "qwen3-vl", "qwen3.5")
+        # qwen3.5-9b-vlm etc.
+        return any(k in m for k in keys) or "vlm" in m
+
+    def _vl_request_timeout(self) -> tuple[float, float]:
+        """(connect, read) timeouts — remote 8B VL needs more headroom."""
+        mode = getattr(self, "lm_mode", "Local")
+        if hasattr(self, "lm_mode_var"):
+            try:
+                mode = self.lm_mode_var.get() or mode
+            except Exception:
+                pass
+        if str(mode).lower().startswith("remote"):
+            return (8.0, 120.0)
+        return (3.0, 60.0)
+
+    def _image_to_data_url(self, img: "Image.Image", *, max_side: int = 960, jpeg: bool = True) -> str:
+        """Encode screenshot for multimodal chat completions (JPEG smaller for remote LAN)."""
+        work = img.convert("RGB")
+        w, h = work.size
+        if max(w, h) > max_side:
+            scale = max_side / float(max(w, h))
+            work = work.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        if jpeg:
+            work.save(buf, format="JPEG", quality=85, optimize=True)
+            mime = "image/jpeg"
+        else:
+            work.save(buf, format="PNG", optimize=True)
+            mime = "image/png"
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    def _extract_chat_message_text(self, data: dict) -> str:
+        """Pull assistant text from OpenAI-compatible (and Qwen reasoning) responses."""
+        try:
+            choice = (data.get("choices") or [None])[0] or {}
+            msg = choice.get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") in (None, "text") and part.get("text"):
+                            parts.append(str(part.get("text") or ""))
+                        elif isinstance(part.get("content"), str):
+                            parts.append(part["content"])
+                    elif isinstance(part, str):
+                        parts.append(part)
+                content = "\n".join(p for p in parts if p).strip()
+            if content is None:
+                content = ""
+            content = str(content).strip()
+            if content:
+                return content
+            # Some reasoning builds put visible answer only in reasoning_content
+            reasoning = str(msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+            if reasoning:
+                return reasoning
+            # Older delta-style
+            text = choice.get("text")
+            if text:
+                return str(text).strip()
+        except Exception:
+            pass
+        return ""
+
     def _ocr_image(self, img: "Image.Image") -> tuple[str, str]:
-        """Return (text, engine_name). Tries Tesseract then local VL."""
-        # 1) Tesseract
-        if _HAS_TESS:
+        """Return (text, engine_name). Prefer VL when a vision model is selected."""
+        self._last_ocr_error = ""
+        prefer_vl = self._model_looks_vision() or getattr(self, "lm_mode", "Local") == "Remote"
+
+        def try_tess() -> tuple[str, str]:
+            if not _HAS_TESS:
+                return "", ""
             try:
                 pre = self._preprocess_for_ocr(img)
                 txt = pytesseract.image_to_string(pre, config="--psm 6")
                 txt = (txt or "").strip()
                 if txt:
                     return txt, "Tesseract"
-            except Exception:
-                pass
+            except Exception as e:
+                self._last_ocr_error = f"Tesseract: {e}"
+            return "", ""
 
-        # 2) Local vision model via LM Studio (OpenAI-compatible image_url)
-        try:
-            txt = self._ocr_via_local_vl(img)
+        def try_vl() -> tuple[str, str]:
+            try:
+                txt = self._ocr_via_local_vl(img)
+                if txt:
+                    return txt, "LM Studio VL"
+            except Exception as e:
+                self._last_ocr_error = str(e)
+            return "", ""
+
+        order = (try_vl, try_tess) if prefer_vl else (try_tess, try_vl)
+        for fn in order:
+            txt, eng = fn()
             if txt:
-                return txt, "local VL"
-        except Exception:
-            pass
-
+                return txt, eng
         return "", "none"
 
     def _ocr_via_local_vl(self, img: "Image.Image") -> str:
         if not _HAS_PIL or base64 is None or io is None:
+            self._last_ocr_error = "Pillow / base64 unavailable"
             return ""
-        # Keep payload small + fast for mid-fight OCR
-        work = img.convert("RGB")
-        w, h = work.size
-        max_side = 960
-        if max(w, h) > max_side:
-            scale = max_side / float(max(w, h))
-            work = work.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-        buf = io.BytesIO()
-        work.save(buf, format="PNG", optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
+        self.api_url = self._normalize_api_url(self.api_url)
+        model = self._selected_lm_model()
+        data_url = self._image_to_data_url(img, max_side=960, jpeg=True)
 
         sampling = self._sampling_payload("ocr")
-        # Smaller images = faster VL; already scaled above
+        # Vision OCR: keep sampling light; drop exotic fields some servers mishandle
+        sampling = {
+            "temperature": float(sampling.get("temperature", 0.05)),
+            "top_p": float(sampling.get("top_p", 0.85)),
+            "max_tokens": int(sampling.get("max_tokens", 280)),
+            "stream": False,
+        }
         payload = {
-            "model": "local-model",
+            "model": model,
             "messages": [
                 {
                     "role": "system",
@@ -6829,8 +8303,8 @@ class GamersChatHelper:
                         {
                             "type": "text",
                             "text": (
-                                "Transcribe the chat messages in this screenshot. "
-                                "Only the player chat lines."
+                                "Transcribe the player chat messages in this screenshot. "
+                                "Only chat lines (names + messages). Ignore UI chrome."
                             ),
                         },
                         {"type": "image_url", "image_url": {"url": data_url}},
@@ -6839,11 +8313,34 @@ class GamersChatHelper:
             ],
             **sampling,
         }
-        r = requests.post(self.api_url, json=payload, timeout=45)
+        timeout = self._vl_request_timeout()
+        try:
+            r = requests.post(
+                self.api_url, json=payload, headers=self._llm_headers(), timeout=timeout
+            )
+        except requests.exceptions.Timeout:
+            self._last_ocr_error = (
+                f"timeout after {timeout[1]:.0f}s · {model} @ {self._host_from_api_url(self.api_url)}"
+            )
+            raise TimeoutError(self._last_ocr_error)
+        except requests.exceptions.ConnectionError as e:
+            self._last_ocr_error = f"connection failed · {self._host_from_api_url(self.api_url)} · {e}"
+            raise ConnectionError(self._last_ocr_error) from e
+
         if r.status_code != 200:
+            body = (r.text or "")[:240].replace("\n", " ")
+            self._last_ocr_error = f"HTTP {r.status_code} · {body}"
             return ""
-        content = r.json()["choices"][0]["message"]["content"]
-        return (content or "").strip()
+        try:
+            data = r.json()
+        except Exception:
+            self._last_ocr_error = f"non-JSON response · {(r.text or '')[:160]}"
+            return ""
+        content = self._extract_chat_message_text(data)
+        if not content:
+            self._last_ocr_error = "model returned empty content (is a VL model loaded?)"
+            return ""
+        return content.strip()
 
     def _clean_ocr_text(self, raw: str) -> str:
         if not raw:
@@ -6858,6 +8355,11 @@ class GamersChatHelper:
                 continue
             if len(p) == 1 and not p.isalnum():
                 continue
+            # Drop repeated-char garbage (e.g. "xadddddddddd")
+            if len(p) >= 6:
+                c = Counter(p.lower())
+                if c.most_common(1)[0][1] >= max(6, int(len(p) * 0.55)):
+                    continue
             lines.append(p)
         return "\n".join(lines).strip()
 
@@ -6874,6 +8376,10 @@ class GamersChatHelper:
             low = ln.lower()
             if any(s in low for s in skip_bits) and len(ln) < 18:
                 continue
+            # skip garbage runs
+            if len(ln) >= 6:
+                if Counter(ln.lower()).most_common(1)[0][1] >= max(6, int(len(ln) * 0.55)):
+                    continue
             if len(ln) >= 2:
                 # Strip leading name prefixes like "PlayerName:" if present
                 if ":" in ln[:24]:
@@ -6884,22 +8390,427 @@ class GamersChatHelper:
         return lines[-1]
 
     # =====================================================================
-    # Recruit helpers
+    # Recruit helpers · local file CRUD (recruit_templates.json)
     # =====================================================================
+    def _new_recruit_id(self) -> str:
+        return f"r{int(time.time() * 1000):x}{random.randint(0, 9999):04d}"
+
+    def _auto_recruit_name(self, text: str) -> str:
+        t = " ".join((text or "").split())
+        if not t:
+            return "Untitled"
+        return (t[:40] + "…") if len(t) > 40 else t
+
+    def _sync_templates_flat(self):
+        """Mirror recruit_templates → flat text list (config backup + offline pack)."""
+        items = getattr(self, "recruit_templates", None) or []
+        self.templates = [str(t.get("text") or "").strip() for t in items if str(t.get("text") or "").strip()]
+
+    def _load_or_migrate_recruit_templates(self):
+        """Load recruit_templates.json; migrate once from config templates if missing."""
+        items: list[dict] = []
+        selected: Optional[str] = None
+        path = RECRUIT_TEMPLATES_PATH
+        loaded_file = False
+
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                loaded_file = True
+                if isinstance(data, list):
+                    raw = data
+                elif isinstance(data, dict):
+                    raw = data.get("templates") or []
+                    selected = data.get("selected_id")
+                else:
+                    raw = []
+                for t in raw:
+                    if isinstance(t, str):
+                        text = t.strip()
+                        if text:
+                            items.append(
+                                {
+                                    "id": self._new_recruit_id(),
+                                    "name": self._auto_recruit_name(text),
+                                    "text": text,
+                                }
+                            )
+                    elif isinstance(t, dict):
+                        text = str(t.get("text") or "").strip()
+                        if not text:
+                            continue
+                        rid = str(t.get("id") or "").strip() or self._new_recruit_id()
+                        name = str(t.get("name") or "").strip()[:80]
+                        items.append(
+                            {
+                                "id": rid,
+                                "name": name or self._auto_recruit_name(text),
+                                "text": text,
+                            }
+                        )
+            except Exception:
+                items = []
+                loaded_file = False
+
+        if not items and not loaded_file:
+            # First run / no file: migrate any non-empty strings left in config
+            for t in (self.templates or []):
+                text = str(t).strip()
+                if not text:
+                    continue
+                # Skip any leftover branded defaults if they somehow remain
+                if "defiant" in text.lower():
+                    continue
+                items.append(
+                    {
+                        "id": self._new_recruit_id(),
+                        "name": self._auto_recruit_name(text),
+                        "text": text,
+                    }
+                )
+            self.recruit_templates = items
+            self._recruit_selected_id = items[0]["id"] if items else None
+            self._sync_templates_flat()
+            if items:
+                self._save_recruit_file()
+            return
+
+        self.recruit_templates = items
+        if selected and any(x.get("id") == selected for x in items):
+            self._recruit_selected_id = selected
+        else:
+            self._recruit_selected_id = items[0]["id"] if items else None
+        self._sync_templates_flat()
+
+    def _save_recruit_file(self) -> bool:
+        """Persist recruit pitches to recruit_templates.json."""
+        self._sync_templates_flat()
+        payload = {
+            "version": 1,
+            "selected_id": getattr(self, "_recruit_selected_id", None),
+            "templates": [
+                {
+                    "id": str(t.get("id") or self._new_recruit_id()),
+                    "name": str(t.get("name") or "")[:80],
+                    "text": str(t.get("text") or "").strip(),
+                }
+                for t in (self.recruit_templates or [])
+                if str(t.get("text") or "").strip()
+            ],
+        }
+        try:
+            with open(RECRUIT_TEMPLATES_PATH, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            return True
+        except Exception as e:
+            try:
+                messagebox.showerror("Recruit save failed", str(e))
+            except Exception:
+                pass
+            return False
+
+    def _find_recruit(self, rid: Optional[str]) -> Optional[dict]:
+        if not rid:
+            return None
+        for t in self.recruit_templates or []:
+            if t.get("id") == rid:
+                return t
+        return None
+
+    def _recruit_combo_data(self) -> tuple[list[str], dict[str, str]]:
+        """Return (combo labels, label→id). Labels are unique."""
+        labels: list[str] = []
+        label_to_id: dict[str, str] = {}
+        used: set[str] = set()
+        for t in self.recruit_templates or []:
+            rid = str(t.get("id") or "")
+            name = str(t.get("name") or "").strip()
+            text = str(t.get("text") or "").strip()
+            base = name or self._auto_recruit_name(text)
+            label = base
+            n = 2
+            while label in used:
+                label = f"{base} ({n})"
+                n += 1
+            used.add(label)
+            labels.append(label)
+            label_to_id[label] = rid
+        if not labels:
+            labels = [RECRUIT_PLACEHOLDER]
+        self._recruit_label_to_id = label_to_id
+        return labels, label_to_id
+
+    def _refresh_recruit_ui(self, load_editor: bool = False):
+        """Refresh combo + optional editor from current selection."""
+        labels, label_to_id = self._recruit_combo_data()
+        if hasattr(self, "template_combo"):
+            try:
+                self.template_combo.configure(values=labels)
+            except Exception:
+                pass
+
+        sel = getattr(self, "_recruit_selected_id", None)
+        item = self._find_recruit(sel)
+        # Pick combo display for selection
+        display = RECRUIT_PLACEHOLDER
+        if item:
+            for lab, rid in label_to_id.items():
+                if rid == item.get("id"):
+                    display = lab
+                    break
+            if hasattr(self, "template_combo"):
+                try:
+                    self.template_combo.set(display)
+                except Exception:
+                    pass
+        else:
+            if hasattr(self, "template_combo"):
+                try:
+                    self.template_combo.set(labels[0])
+                except Exception:
+                    pass
+
+        if load_editor and hasattr(self, "msg_textbox"):
+            try:
+                self.msg_textbox.delete("1.0", tk.END)
+                if item:
+                    self.msg_textbox.insert("1.0", item.get("text") or "")
+                    if hasattr(self, "recruit_name_var"):
+                        self.recruit_name_var.set(str(item.get("name") or ""))
+                else:
+                    if hasattr(self, "recruit_name_var"):
+                        self.recruit_name_var.set("")
+            except Exception:
+                pass
+            self.update_counter()
+        self._update_recruit_crud_status()
+
+    def _update_recruit_crud_status(self):
+        """Show Create vs Update state next to the pitch picker."""
+        if not hasattr(self, "recruit_crud_status"):
+            return
+        n = len(getattr(self, "recruit_templates", None) or [])
+        item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        try:
+            if item:
+                name = str(item.get("name") or "pitch")[:28]
+                self.recruit_crud_status.configure(
+                    text=f"Editing · {name}  ({n})",
+                    text_color=C["info"],
+                )
+            else:
+                self.recruit_crud_status.configure(
+                    text=f"New draft  ({n} saved)",
+                    text_color=C["faint"],
+                )
+        except Exception:
+            pass
+
     def load_selected_template(self, choice: str):
-        self.msg_textbox.delete("1.0", tk.END)
-        self.msg_textbox.insert("1.0", choice)
+        """Read — load a saved pitch into the editor (combo callback)."""
+        if not choice or choice == RECRUIT_PLACEHOLDER:
+            return
+        rid = (getattr(self, "_recruit_label_to_id", {}) or {}).get(choice)
+        if not rid:
+            # Fallback: match by label rebuild
+            labels, mapping = self._recruit_combo_data()
+            rid = mapping.get(choice)
+        item = self._find_recruit(rid)
+        if not item:
+            return
+        self._recruit_selected_id = item.get("id")
+        if hasattr(self, "msg_textbox"):
+            self.msg_textbox.delete("1.0", tk.END)
+            self.msg_textbox.insert("1.0", item.get("text") or "")
+        if hasattr(self, "recruit_name_var"):
+            self.recruit_name_var.set(str(item.get("name") or ""))
         self.update_counter()
+        self._update_recruit_crud_status()
+        # Remember selection in file (light write)
+        self._save_recruit_file()
+        self.show_toast(f"Loaded · {item.get('name') or 'pitch'}", kind="info")
+
+    def recruit_new(self):
+        """Create — blank draft (does not delete anything until you Update/Save)."""
+        self._recruit_selected_id = None
+        if hasattr(self, "recruit_name_var"):
+            self.recruit_name_var.set("")
+        if hasattr(self, "msg_textbox"):
+            self.msg_textbox.delete("1.0", tk.END)
+        self._refresh_recruit_ui(load_editor=False)
+        if hasattr(self, "template_combo"):
+            try:
+                labels, _ = self._recruit_combo_data()
+                # Show placeholder-ish first label when empty list
+                self.template_combo.set(labels[0] if labels else RECRUIT_PLACEHOLDER)
+            except Exception:
+                pass
+        self.update_counter()
+        self._update_recruit_crud_status()
+        self.show_toast("New draft — type a pitch, then Update", kind="info")
+
+    def recruit_save(self):
+        """Update selected pitch, or Create if no selection → recruit_templates.json."""
+        if not hasattr(self, "msg_textbox"):
+            return
+        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showwarning("Empty", "Write a recruiting message first.")
+            return
+        name = ""
+        if hasattr(self, "recruit_name_var"):
+            name = (self.recruit_name_var.get() or "").strip()[:80]
+        if not name:
+            name = self._auto_recruit_name(text)
+
+        item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        if item:
+            item["name"] = name
+            item["text"] = text
+            self.show_toast(f"Updated · {name}", kind="ok")
+            self.set_status(f"Recruit updated · {name}")
+        else:
+            rid = self._new_recruit_id()
+            self.recruit_templates.append({"id": rid, "name": name, "text": text})
+            self._recruit_selected_id = rid
+            self.show_toast(f"Created · {name}", kind="ok")
+            self.set_status(f"Recruit created · {name}")
+
+        if self._save_recruit_file():
+            self.save_settings()
+            self._refresh_recruit_ui(load_editor=True)
+
+    def recruit_save_as_new(self):
+        """Always create a new pitch from the current editor (keeps the old one)."""
+        self._recruit_selected_id = None
+        self.recruit_save()
+
+    def recruit_duplicate(self):
+        """Duplicate — save a copy of the current pitch as a new named entry."""
+        if not hasattr(self, "msg_textbox"):
+            return
+        text = self.msg_textbox.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showwarning("Empty", "Nothing to duplicate — load or type a pitch first.")
+            return
+        seed_name = ""
+        if hasattr(self, "recruit_name_var"):
+            seed_name = (self.recruit_name_var.get() or "").strip()
+        if not seed_name:
+            item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+            if item:
+                seed_name = str(item.get("name") or "")
+        if not seed_name:
+            seed_name = self._auto_recruit_name(text)
+        # Unique copy name
+        base = re.sub(r"\s*[·•]\s*(copy|variant|v\d+)\s*$", "", seed_name, flags=re.IGNORECASE).strip()
+        base = (base or "Pitch")[:50]
+        existing = {
+            str(t.get("name") or "").strip().lower()
+            for t in (getattr(self, "recruit_templates", None) or [])
+        }
+        name = f"{base} · copy"
+        if name.lower() in existing:
+            for i in range(2, 50):
+                cand = f"{base} · copy {i}"
+                if cand.lower() not in existing:
+                    name = cand
+                    break
+        rid = self._new_recruit_id()
+        self.recruit_templates = list(getattr(self, "recruit_templates", None) or [])
+        self.recruit_templates.append({"id": rid, "name": name, "text": text})
+        self._recruit_selected_id = rid
+        if hasattr(self, "recruit_name_var"):
+            self.recruit_name_var.set(name)
+        if self._save_recruit_file():
+            self.save_settings()
+            self._refresh_recruit_ui(load_editor=True)
+            self.show_toast(f"Duplicated · {name}", kind="ok")
+            self.set_status(f"Recruit duplicated · {name}")
+        else:
+            self.show_toast("Duplicate failed", kind="error")
+
+    def recruit_delete(self):
+        """Delete the selected recruiting statement from the local file."""
+        item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        if not item:
+            # Try match editor text to a saved item
+            text = ""
+            if hasattr(self, "msg_textbox"):
+                text = self.msg_textbox.get("1.0", "end-1c").strip()
+            for t in self.recruit_templates or []:
+                if (t.get("text") or "").strip() == text and text:
+                    item = t
+                    break
+        if not item:
+            self.show_toast("Nothing selected to delete", kind="warn")
+            return
+        label = item.get("name") or self._auto_recruit_name(item.get("text") or "")
+        if not messagebox.askyesno(
+            "Delete pitch?",
+            f"Delete this recruiting statement?\n\n{label}\n\nThis updates recruit_templates.json.",
+        ):
+            return
+        rid = item.get("id")
+        self.recruit_templates = [t for t in self.recruit_templates if t.get("id") != rid]
+        self._recruit_selected_id = (
+            self.recruit_templates[0]["id"] if self.recruit_templates else None
+        )
+        self._save_recruit_file()
+        self.save_settings()
+        self._refresh_recruit_ui(load_editor=True)
+        self.show_toast(f"Deleted · {label}", kind="info")
+        self.set_status(f"Recruit deleted · {label}")
+
+    def recruit_open_file(self):
+        """Open recruit_templates.json in Explorer / default editor."""
+        path = RECRUIT_TEMPLATES_PATH
+        if not os.path.isfile(path):
+            # Create empty file so user can see it
+            self._save_recruit_file()
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", path])
+            self.show_toast("Opened recruit_templates.json", kind="info")
+        except Exception:
+            try:
+                os.startfile(APP_DIR)  # type: ignore[attr-defined]
+            except Exception:
+                messagebox.showinfo("Recruit file", path)
+
+    def save_custom_template(self):
+        """Back-compat alias for older UI hooks."""
+        self.recruit_save()
+
+    def reset_presets(self):
+        if messagebox.askyesno(
+            "Clear all pitches?",
+            "Delete ALL recruiting statements from recruit_templates.json?",
+        ):
+            self.recruit_templates = []
+            self._recruit_selected_id = None
+            self._save_recruit_file()
+            self.save_settings()
+            self._refresh_recruit_ui(load_editor=True)
+            self.show_toast("All recruit pitches cleared", kind="info")
 
     def update_counter(self, event=None):
+        if not hasattr(self, "msg_textbox") or not hasattr(self, "counter_label"):
+            return
         text = self.msg_textbox.get("1.0", "end-1c")
         lim = self.limit()
         length = len(text)
-        self.safety_progressbar.set(min(length / max(lim, 1), 1.0))
+        if hasattr(self, "safety_progressbar"):
+            self.safety_progressbar.set(min(length / max(lim, 1), 1.0))
         self.counter_label.configure(text=f"{length} / {lim}")
         color = C["danger"] if length > lim else C["warn"] if length >= lim - 15 else C["success"]
         self.counter_label.configure(text_color=color)
-        self.safety_progressbar.configure(progress_color=color)
+        if hasattr(self, "safety_progressbar"):
+            self.safety_progressbar.configure(progress_color=color)
 
     def copy_recruitment(self):
         """Copy the Recruit message box (also syncs Generated line)."""
@@ -6921,21 +8832,6 @@ class GamersChatHelper:
         self.set_gen_text(text, also_ai=True, also_hud=True)
         self.show_toast("In Generated line — Copy when ready", kind="info")
 
-    def save_custom_template(self):
-        text = self.msg_textbox.get("1.0", "end-1c").strip()
-        if text and text not in self.templates:
-            self.templates.append(text)
-            self.template_combo.configure(values=self.templates)
-            self.save_settings()
-            self.show_toast("Preset saved", kind="ok")
-
-    def reset_presets(self):
-        if messagebox.askyesno("Reset", "Reset templates to defaults?"):
-            self.templates = list(DEFAULT_TEMPLATES)
-            self.save_settings()
-            self.template_combo.configure(values=self.templates)
-            self.load_selected_template(self.templates[0])
-
     def ai_fit_recruitment(self):
         text = self.msg_textbox.get("1.0", "end-1c").strip()
         if not text:
@@ -6954,13 +8850,255 @@ class GamersChatHelper:
         self._last_gen_mode = "recruit"
         self.run_llm_async(prompt, on_done=self._apply_recruit_result, job="recruit")
 
-    def _apply_recruit_result(self, reply: str):
+    def _recruit_seed_text(self) -> str:
+        """Current pitch used as the variation seed."""
+        if not hasattr(self, "msg_textbox"):
+            return ""
+        return self.msg_textbox.get("1.0", "end-1c").strip()
+
+    def _recruit_variant_direction(self) -> str:
+        if hasattr(self, "recruit_variant_seed_var"):
+            return (self.recruit_variant_seed_var.get() or "").strip()[:160]
+        return ""
+
+    def generate_recruit_variant(self, n: int = 1, save_as_new: bool = False):
+        """
+        AI variation of the current recruit message (seed).
+        Optional Variant seed steers tone/length (shorter, chill, mention X…).
+        n=3 fills the option buttons under Generated line.
+        save_as_new=True → after a good result, write a NEW pitch to recruit_templates.json.
+        """
+        text = self._recruit_seed_text()
+        if not text:
+            messagebox.showwarning(
+                "Need a seed",
+                "Load a saved pitch or type a recruiting message first.\n"
+                "That text is the seed AI will rewrite.",
+            )
+            return
+        n = 1 if n < 1 else (3 if n > 3 else int(n))
+        # Multi-option mode does not auto-save all three; user picks then Save as new
+        if n > 1:
+            save_as_new = False
+        game = self.game_var.get()
+        lim = self.limit()
+        direction = self._recruit_variant_direction()
+        house = self.house_style_for(game)
+        house_bit = f"\nHouse style notes: {house}\n" if house else ""
+        # Remember seed name for the new pitch title
+        seed_name = ""
+        if hasattr(self, "recruit_name_var"):
+            seed_name = (self.recruit_name_var.get() or "").strip()[:60]
+        if not seed_name:
+            item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+            if item:
+                seed_name = str(item.get("name") or "").strip()[:60]
+        if not seed_name:
+            seed_name = self._auto_recruit_name(text)
+        self._recruit_variant_seed_name = seed_name
+        self._recruit_variant_save_as_new = bool(save_as_new)
+
+        if n == 1:
+            dir_bit = (
+                f"Variant direction (honor if possible, do not invent facts): {direction}\n"
+                if direction
+                else "Make it feel fresh — different hooks/rhythm, same offer.\n"
+            )
+            prompt = (
+                f"Write ONE new guild recruiting chat line for {game}.\n"
+                f"This is a VARIANT of the seed below — same facts, new wording.\n"
+                f"{dir_bit}"
+                f"Keep guild/clan name, core benefits, and how to apply if present.\n"
+                f"Do NOT invent Discord requirements, buffs, or content the seed never said.\n"
+                f"Do NOT copy phrases from the seed word-for-word.\n"
+                f"Sound like a real player in global chat, not an ad agency.\n"
+                f"{house_bit}"
+                f"HARD LIMIT: under {lim} characters.\n"
+                f"Output ONLY the recruitment line.\n\n"
+                f"SEED PITCH:\n{text}"
+            )
+            self._last_gen_mode = "recruit_variant"
+            self.set_status(
+                "Recruit variant + save…" if save_as_new else "Recruit variant…"
+            )
+
+            def on_done(reply: str):
+                self._apply_recruit_result(reply, save_as_new=save_as_new)
+
+            self.run_llm_async(
+                prompt,
+                on_done=on_done,
+                job="recruit_variant",
+                seed_text=text,
+            )
+            return
+
+        # Three distinct variants
+        dir_bit = (
+            f"Shared direction for all three: {direction}\n" if direction else ""
+        )
+        prompt = (
+            f"Write THREE different guild recruiting chat lines for {game}.\n"
+            f"Each is a VARIANT of the same seed pitch — same facts, different wording.\n"
+            f"{dir_bit}"
+            f"1 = tighter / shorter\n"
+            f"2 = friendlier / chill\n"
+            f"3 = punchier / more hype (still chat-safe)\n"
+            f"Keep guild name + core offer + apply path from the seed.\n"
+            f"Do NOT invent benefits the seed never said.\n"
+            f"Do NOT copy seed phrasing.\n"
+            f"{house_bit}"
+            f"Each under {lim} characters.\n"
+            f"Output exactly:\n1. line\n2. line\n3. line\n\n"
+            f"SEED PITCH:\n{text}"
+        )
+        self._last_gen_mode = "recruit_variant"
+        self.set_status("Recruit ×3 variants…")
+        self.copy_badge.configure(text="thinking", text_color=C["warn"])
+
+        if self._busy:
+            self.set_status("Already generating…")
+            return
+        self._busy = True
+
+        def work():
+            used_offline = False
+            if getattr(self, "_llm_online", None) is False:
+                results = [self._pick_recruit_local() for _ in range(3)]
+                used_offline = True
+            else:
+                results = self.call_local_llm(prompt, n=3, job="recruit_variant")
+                if results and all(self._is_err(r) for r in results):
+                    results = [self._pick_recruit_local() for _ in range(3)]
+                    used_offline = True
+                    self._llm_online = False
+                elif results and not all(self._is_err(r) for r in results):
+                    self._llm_online = True
+
+            def finish():
+                self._busy = False
+                self.session_gens += 1
+                self.update_session_chip()
+                cleaned = []
+                for r in results or []:
+                    if self._is_err(r):
+                        continue
+                    line = self._clean_line(r, lim)
+                    if line and line not in cleaned:
+                        # Prefer not identical to seed
+                        if line.strip().lower() == text.strip().lower():
+                            continue
+                        cleaned.append(line)
+                while len(cleaned) < 3:
+                    # Soft offline padding
+                    pad_line = self._pick_recruit_local()
+                    if pad_line and pad_line not in cleaned:
+                        cleaned.append(pad_line)
+                    else:
+                        cleaned.append(text[:lim] if text else pad_line)
+                    if len(cleaned) >= 3:
+                        break
+                cleaned = cleaned[:3]
+
+                def apply():
+                    if used_offline:
+                        self.show_toast("Offline pack (AI off)", kind="info")
+                    self._last_variants = cleaned
+                    self._set_variant_buttons(cleaned)
+                    if cleaned:
+                        self._apply_recruit_result(cleaned[0], save_as_new=False)
+                        self.show_toast(
+                            "3 variants ready — pick 1–3, then Save as new",
+                            kind="ok",
+                        )
+                    self.copy_badge.configure(text="ready", text_color=C["muted"])
+                    self.set_status("Recruit variants ready")
+
+                self.ui_safe(apply)
+
+            self.schedule_ui(finish)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _next_recruit_variant_name(self, seed_name: str = "") -> str:
+        """Build a unique name like 'KFQ1 · v2' for a saved AI variant."""
+        base = (seed_name or "Pitch").strip() or "Pitch"
+        # Strip existing · vN suffix so we don't stack v2 · v3
+        base = re.sub(r"\s*[·•]\s*v\d+\s*$", "", base, flags=re.IGNORECASE).strip() or "Pitch"
+        base = base[:50]
+        existing = {
+            str(t.get("name") or "").strip().lower()
+            for t in (getattr(self, "recruit_templates", None) or [])
+        }
+        # Prefer "Name · variant", then "Name · v2", …
+        candidates = [f"{base} · variant"]
+        for i in range(2, 50):
+            candidates.append(f"{base} · v{i}")
+        for name in candidates:
+            if name.lower() not in existing:
+                return name
+        return f"{base} · v{int(time.time()) % 10000}"
+
+    def _save_recruit_variant_as_new(self, text: str, seed_name: str = "") -> bool:
+        """
+        Append AI variant as a brand-new pitch (does not overwrite seed).
+        Updates recruit_templates.json + Saved pitch dropdown.
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+        name = self._next_recruit_variant_name(seed_name)
+        rid = self._new_recruit_id()
+        self.recruit_templates = list(getattr(self, "recruit_templates", None) or [])
+        self.recruit_templates.append({"id": rid, "name": name, "text": text})
+        self._recruit_selected_id = rid
+        if hasattr(self, "recruit_name_var"):
+            self.recruit_name_var.set(name)
+        if hasattr(self, "msg_textbox"):
+            self.msg_textbox.delete("1.0", tk.END)
+            self.msg_textbox.insert("1.0", text)
+            self.update_counter()
+        ok = self._save_recruit_file()
+        if ok:
+            self.save_settings()
+            self._refresh_recruit_ui(load_editor=True)
+        return ok
+
+    def _apply_recruit_result(self, reply: str, save_as_new: bool = False):
         if self._is_err(reply):
             self.show_toast("AI offline", kind="error")
+            self._recruit_variant_save_as_new = False
             return
-        reply = self._dedupe_against_history(reply)
+        lim = self.limit()
+        reply = self._clean_line(reply, lim)
+        reply = self._dedupe_against_history(reply, fallback=reply)
+        # Honor one-shot flag from generate_recruit_variant(save_as_new=True)
+        if not save_as_new:
+            save_as_new = bool(getattr(self, "_recruit_variant_save_as_new", False))
+        self._recruit_variant_save_as_new = False
+        seed_name = str(getattr(self, "_recruit_variant_seed_name", "") or "")
 
         def apply():
+            if save_as_new and reply:
+                ok = self._save_recruit_variant_as_new(reply, seed_name=seed_name)
+                self.set_gen_text(reply, also_ai=True, also_hud=True)
+                if self.auto_copy.get():
+                    self.safe_copy(reply)
+                else:
+                    self.push_history(reply, count=False)
+                if ok:
+                    name = ""
+                    if hasattr(self, "recruit_name_var"):
+                        name = (self.recruit_name_var.get() or "").strip()
+                    self.show_toast(
+                        f"Saved new pitch · {name or 'variant'}",
+                        kind="ok",
+                    )
+                    self.set_status(f"Recruit variant saved · {name or 'variant'}")
+                else:
+                    self.show_toast("Variant ready — save failed", kind="warn")
+                return
+
             if hasattr(self, "msg_textbox"):
                 self.msg_textbox.delete("1.0", tk.END)
                 self.msg_textbox.insert("1.0", reply)
@@ -6970,14 +9108,33 @@ class GamersChatHelper:
                 self.safe_copy(reply)
             else:
                 self.push_history(reply, count=False)
+            mode = getattr(self, "_last_gen_mode", "") or ""
+            if mode == "recruit_variant":
+                self.show_toast("Recruit variant ready — Save as new to keep", kind="ok")
 
         self.ui_safe(apply)
 
     # =====================================================================
     # LLM — job-split prompts; temp/max_tokens sent in API payload
     # =====================================================================
-    def intensity_instruction(self) -> str:
-        level = int(self.intensity_var.get())
+    def intensity_instruction(self, job: str = "") -> str:
+        level = int(self.intensity_var.get()) if hasattr(self, "intensity_var") else 1
+        # Replies: heat only nudges dryness vs light tease — never hype/chaos
+        if job in ("comeback", "triple"):
+            if level <= 0:
+                return (
+                    "Tone: chill and understated. Short. Almost dry. "
+                    "No hype, no superlatives, no performance comedy."
+                )
+            if level == 1:
+                return (
+                    "Tone: normal in-game chat. Casual, human, lightly funny at most. "
+                    "Never tryhard-clever or cheerleader-y."
+                )
+            return (
+                "Tone: slightly sharper tease or dry sarcasm — still low-key. "
+                "One jab max. No superlatives, no roast essay, not mean."
+            )
         if level <= 0:
             return "Tone: friendly, low-drama, welcoming. Zero toxicity."
         if level == 1:
@@ -7018,21 +9175,29 @@ class GamersChatHelper:
                 "MEDIAN, SUGGEST, WTS, NOTES). No markdown. No preamble."
             )
 
-        # Clean dad jokes — always family-safe
+        # Clean dad jokes — always family-safe; MUST finish the punchline
         if job == "dadjoke":
             cap = min(lim, DAD_JOKE_LIMIT)
             base = (
-                "You write classic clean dad jokes for multiplayer chat.\n"
+                "You write classic clean dad jokes for multiplayer game chat.\n"
                 "ALWAYS family-friendly. G-rated. No innuendo, no swearing, no insults, "
-                "no dark humor, no politics, no adult topics.\n"
-                "Style: punny, wholesome, groan-worthy dad energy.\n"
-                "Prefer everyday topics (food, animals, school, sports, jobs) over games.\n"
+                "no dark humor, no politics, no adult topics, no game jargon.\n"
+                "Voice: wholesome dad energy — punny, slightly proud of a bad joke.\n"
+                "CRITICAL: every joke must be COMPLETE — setup AND punchline. "
+                "Never stop after the question. Never leave the answer unfinished.\n"
+                "Good example: What do you call a bread that's always late? A loaf-er.\n"
+                "Bad example: What do you call a bread that's always late?  (missing punchline)\n"
+                "Structures: setup then punchline · What do you call…? · Why did the…? · "
+                "I used to… · object wordplay (food, animals, jobs, school, sports).\n"
+                "Make it ORIGINAL — not a famous stock joke word-for-word.\n"
             )
             base += (
                 "RULES:\n"
-                "- Output ONLY the joke text. No 'Here's a joke' preamble.\n"
-                f"- HARD CAP: {cap} characters.\n"
-                "- One joke only. No emojis, hashtags, markdown.\n"
+                "- Output ONLY the full joke text. No 'Here's a joke' / 'Dad joke:' preamble.\n"
+                f"- HARD CAP: {cap} characters. Use enough of the budget to finish the punchline.\n"
+                "- One complete joke only. Setup + payoff. No trailing ellipsis mid-thought.\n"
+                "- No emojis, hashtags, markdown.\n"
+                "- Groan-worthy is good; random nonsense is not a dad joke.\n"
             )
             base += self._anti_echo_block()
             return base
@@ -7082,6 +9247,10 @@ class GamersChatHelper:
             f"Activity context: {activity}.\n"
             f"{prof['avoid']}\n"
         )
+        # Per-game vocabulary normalizer (DG=Dungeon, WB=World Boss, …)
+        vocab_block = self.vocab_prompt_block(game)
+        if vocab_block:
+            base += vocab_block
         house = self.house_style_for(game)
         if house:
             base += (
@@ -7089,25 +9258,56 @@ class GamersChatHelper:
                 f"{house}\n"
             )
         if cfg.get("use_mood"):
-            base += f"Personality flavor: {self.mood_var.get()}.\n{self.intensity_instruction()}\n"
+            mood = self.mood_var.get() if hasattr(self, "mood_var") else "Casual Gamer"
+            # For replies, mood is a light tint only — never a character monologue
+            if job in ("comeback", "triple"):
+                base += (
+                    f"Light personality tint only: {mood}. Stay understated.\n"
+                    f"{self.intensity_instruction(job)}\n"
+                )
+            else:
+                base += f"Personality flavor: {mood}.\n{self.intensity_instruction(job)}\n"
         # Only inject specialty terms for LFG/recruit — not for idle presence chat
         if job == "lfg" and hasattr(self, "lfg_target_var"):
             info = self.lfg_target_info()
+            label = (info.get("label") or "").lower()
             base += (
                 f"Selected LFG content: {info['label']}. "
                 f"The message MUST be about that content only.\n"
-                f"Do NOT invent extra systems. Do NOT mention WB/world boss or CZ/combat zone "
-                f"unless the selected content is World Boss or Combat Zone.\n"
             )
+            # Content-specific allow list (Quinfall etc.)
+            if "world boss" in label:
+                base += "WB / world boss language is REQUIRED/allowed for this LFG.\n"
+            elif "combat zone" in label:
+                base += "CZ / combat zone language is REQUIRED/allowed for this LFG.\n"
+            elif "dungeon" in label:
+                base += (
+                    "Dungeon language is required. Players often write DG for dungeon — "
+                    "DG is valid and preferred short form.\n"
+                )
+            else:
+                base += (
+                    "Do NOT mention WB/world boss, CZ/combat zone, or DG/dungeon "
+                    "unless they appear in the selected content or location name.\n"
+                )
         elif cfg.get("use_terms") and job in ("recruit",):
             terms = ", ".join(prof.get("terms", [])[:8])
             if terms:
                 base += f"Light native shorthand only when natural: {terms}.\n"
-        elif job in ("banter", "comeback", "triple", "spice", "refine"):
+        elif job in ("banter", "spice", "refine"):
             base += (
                 "For presence/idle chat: use GENERIC gamer platitudes "
                 "(grind, loot, chill, gg, brb, hanging out). "
-                "Do NOT force WB, CZ, combat zone, world boss, or invented jargon.\n"
+                "Do NOT force content acronyms (WB/CZ/DG) unless the activity is that content.\n"
+            )
+        elif job in ("comeback", "triple"):
+            base += (
+                "REPLY VOICE: real player typing fast in global/party chat.\n"
+                "Understated > clever. Dry or casual > witty monologue.\n"
+                "Match their energy: short in → short out.\n"
+                "If THEY used game shorthand (DG, WB, CZ, …), decode it correctly and "
+                "you may reply using the same shorthand.\n"
+                "Do NOT force content jargon they did not use.\n"
             )
 
         job_rules = {
@@ -7115,21 +9315,35 @@ class GamersChatHelper:
                 "JOB: LFG / party call only.\n"
                 "Name the exact content the user selected. Clear need + vibe.\n"
                 "No life story. No guild recruiting. No mixing unrelated content.\n"
-                "Only use WB/CZ language if that is the selected content.\n"
+                "Use this game's natural shorthand when it fits the selected content "
+                "(e.g. DG for Dungeon, WB for World Boss, CZ for Combat Zone).\n"
             ),
             "recruit": (
                 "JOB: guild/clan recruitment line only.\n"
                 "Preserve facts from the user draft. Punchy and scannable.\n"
                 "Avoid stuffing fake system acronyms.\n"
             ),
+            "recruit_variant": (
+                "JOB: rewrite an existing guild recruit pitch as a fresh VARIANT.\n"
+                "Keep the SAME guild/clan name, core benefits, rules, and how-to-apply.\n"
+                "Change wording, rhythm, and hooks — do NOT copy the seed phrasing.\n"
+                "Do not invent new rewards, Discord rules, or content the seed never said.\n"
+                "Punchy, scannable chat line — not a paragraph essay.\n"
+            ),
             "comeback": (
-                "JOB: clap-back / reply to something another player said.\n"
-                "React to THEIR line. Do not change the subject to LFG or recruiting.\n"
+                "JOB: reply to another player's line in chat.\n"
+                "React to THEIR words. Answer a question if they asked one.\n"
+                "Sound like a human, not a coach, wingman, or hype bot.\n"
+                "Prefer short understated lines (fair / lol / true / one dry beat).\n"
+                "FORBIDDEN: superlatives, cheerleading, 'as a fellow player', essay replies,\n"
+                "forced jokes, LFG/recruit pivots unless they asked, invented drama.\n"
                 "Do not invent WB/CZ unless they mentioned it.\n"
             ),
             "triple": (
-                "JOB: three alternate chat lines as numbered options.\n"
-                "Each line must be distinct in tone. Generic gamer voice.\n"
+                "JOB: three alternate REPLY lines as numbered options.\n"
+                "1 = dry/minimal · 2 = friendly · 3 = light tease.\n"
+                "All three understated and human — no hype, no superlatives.\n"
+                "Each must still respond to what they said.\n"
             ),
             "banter": (
                 "JOB: casual presence line — maintain activity appearance in chat.\n"
@@ -7147,11 +9361,13 @@ class GamersChatHelper:
             ),
         }
         base += job_rules.get(job, job_rules["banter"])
+        prefer_short = max(24, min(lim, 90 if job in ("comeback", "triple") else lim))
         base += (
             "RULES:\n"
             "- Output ONLY the chat message text. No quotes. No labels. No preamble.\n"
-            f"- HARD CAP: {lim} characters. Prefer shorter.\n"
-            "- Sound human and typed fast. No emojis, hashtags, markdown.\n"
+            f"- HARD CAP: {lim} characters. Prefer shorter"
+            + (f" (aim under {prefer_short}).\n" if job in ("comeback", "triple") else ".\n")
+            + "- Sound human and typed fast. No emojis, hashtags, markdown.\n"
             "- One message only unless asked for numbered options.\n"
             "- Never start with Chat:/Message:/Reply:/As a player.\n"
         )
@@ -7193,9 +9409,14 @@ class GamersChatHelper:
 
     def call_local_llm(self, user_prompt: str, n: int = 1, job: str = "banter") -> list[str]:
         lim = self.limit()
-        use_job = "triple" if n > 1 else job
+        # Keep specialized multi-output jobs (recruit_variant, etc.); only fall back
+        # to "triple" system prompt for generic multi when the job has no multi rules.
+        if n > 1 and job in ("banter", "comeback", "spice", "refine", "lfg", "noise"):
+            use_job = "triple"
+        else:
+            use_job = job
         content = user_prompt
-        if n > 1:
+        if n > 1 and "1." not in user_prompt and "1)" not in user_prompt:
             content = (
                 user_prompt
                 + f"\n\nGive exactly {n} different options as:\n1. line\n2. line\n3. line\n"
@@ -7203,9 +9424,12 @@ class GamersChatHelper:
             )
 
         sampling = self._sampling_payload(use_job)
+        # Prefer recruit_variant sampling even when n>1
+        if job == "recruit_variant":
+            sampling = self._sampling_payload("recruit_variant")
         self.api_url = self._normalize_api_url(self.api_url)
         payload = {
-            "model": "local-model",
+            "model": self._selected_lm_model(),
             "messages": [
                 {"role": "system", "content": self.system_prompt(use_job)},
                 {"role": "user", "content": content},
@@ -7213,7 +9437,9 @@ class GamersChatHelper:
             **sampling,
         }
         try:
-            r = requests.post(self.api_url, json=payload, timeout=25)
+            r = requests.post(
+                self.api_url, json=payload, headers=self._llm_headers(), timeout=25
+            )
             if r.status_code != 200:
                 return [f"Error: HTTP {r.status_code}"]
             raw = r.json()["choices"][0]["message"]["content"].strip()
@@ -7221,7 +9447,8 @@ class GamersChatHelper:
                 return self._parse_numbered(raw, n, lim)
             return [self._clean_line(raw, lim)]
         except Exception:
-            return ["Backend offline. Start LM Studio Local Server on 127.0.0.1:1234."]
+            host = getattr(self, "lm_host", "") or LM_DEFAULT_LOCAL_HOST
+            return [f"Backend offline. Start LM Studio server on {host}."]
 
     def _clean_line(self, raw: str, lim: int) -> str:
         line = raw.strip().strip('"').strip("'")
@@ -7298,24 +9525,54 @@ class GamersChatHelper:
         return line
 
     def _pick_comeback_local(self, they_said: str = "") -> str:
-        """Offline clap-back pack — generic, not AI."""
+        """Offline reply pack — short/human, not AI."""
         lim = self.limit()
         low = (they_said or "").lower()
         if any(w in low for w in ("lfg", "lfm", "looking for", "need ")):
             pool = [
-                "I can hop if still need",
-                "invite if spots left",
-                "might be down — what's the content?",
+                "i can hop if still need",
+                "invite if spots",
+                "might be down — what content?",
                 "same, forming too",
             ]
+        elif re.search(r"(?<![a-z0-9])dg(?![a-z0-9])", low) or "dungeon" in low:
+            pool = [
+                "which dg?",
+                "i can hop if still need",
+                "what dungeon?",
+                "might be down for that dg",
+            ]
+        elif re.search(r"(?<![a-z0-9])wb(?![a-z0-9])", low) or "world boss" in low:
+            pool = [
+                "wb when?",
+                "might hop if still up",
+                "same, waiting on wb",
+                "invite if spots for wb",
+            ]
+        elif re.search(r"(?<![a-z0-9])cz(?![a-z0-9])", low) or "combat zone" in low:
+            pool = [
+                "cz? might hop",
+                "which cz / need?",
+                "same, looking at cz",
+                "invite if still need for cz",
+            ]
+        elif any(w in low for w in ("howdy", "hello", "hi ", "hey", "o/")):
+            pool = ["hey", "o/", "yo", "howdy"]
         elif any(w in low for w in ("lol", "haha", "lmao", "xd")):
-            pool = ["lol true", "same", "real", "that's fair"]
+            pool = ["lol true", "same", "real", "fair"]
+        elif any(w in low for w in ("price", "sell", "buy", "gold", "cost", "tp ")):
+            pool = [
+                "yeah prices are weird",
+                "felt that",
+                "market's a mess rn",
+                "true, not paying that",
+            ]
         elif "?" in (they_said or ""):
             pool = [
                 "not sure tbh",
-                "maybe — try asking again",
-                "idk, just vibing",
+                "idk — maybe",
                 "could be",
+                "no idea, just vibing",
             ]
         else:
             pool = [
@@ -7329,6 +9586,7 @@ class GamersChatHelper:
                 "facts",
                 "mood",
                 "oof",
+                "yeah",
             ]
         recent = set(self.history[-10:])
         fresh = [p for p in pool if p not in recent]
@@ -7336,6 +9594,29 @@ class GamersChatHelper:
         if len(line) > lim:
             line = self.trim_to_limit(line)
         return line
+
+    def _reply_too_hype(self, text: str) -> bool:
+        """True if the model wrote superlative / bot-cheerleader energy."""
+        low = f" {(text or '').lower()} "
+        hits = sum(1 for m in REPLY_HYPE_MARKERS if m in low)
+        if hits >= 1 and len((text or "").split()) >= 8:
+            return True
+        if hits >= 2:
+            return True
+        # Long performative replies feel fake in game chat
+        if len(text or "") > min(self.limit(), 110) and hits >= 1:
+            return True
+        # Exclamation spam
+        if (text or "").count("!") >= 2:
+            return True
+        return False
+
+    def _soften_reply_line(self, text: str, they_said: str = "") -> str:
+        """If AI went tryhard, fall back to a short human offline line."""
+        t = (text or "").strip()
+        if not t or self._is_err(t) or self._reply_too_hype(t):
+            return self._pick_comeback_local(they_said)
+        return t
 
     def _pick_recruit_local(self) -> str:
         """Offline: use current recruit draft or first template, fit to limit."""
@@ -7347,7 +9628,13 @@ class GamersChatHelper:
         except Exception:
             pass
         if not text:
-            text = (self.templates[0] if self.templates else "Chill guild recruiting — whisper me")
+            items = getattr(self, "recruit_templates", None) or []
+            if items:
+                text = str(items[0].get("text") or "").strip()
+            elif self.templates:
+                text = self.templates[0]
+            else:
+                text = "Chill guild recruiting — whisper me"
         if len(text) > lim:
             text = self.trim_to_limit(text)
         return text
@@ -7363,7 +9650,7 @@ class GamersChatHelper:
             return self._pick_dad_joke_local()
         if j == "comeback":
             return self._pick_comeback_local(they_said)
-        if j == "recruit":
+        if j in ("recruit", "recruit_variant"):
             return self._pick_recruit_local()
         if j in ("refine", "spice"):
             base = (seed_text or "").strip()
@@ -7510,7 +9797,7 @@ class GamersChatHelper:
 
                 self.ui_safe(apply)
 
-            self.root.after(0, finish)
+            self.schedule_ui(finish)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -7736,44 +10023,107 @@ class GamersChatHelper:
             line = self.trim_to_limit(line) if len(line) > self.limit() else line[:cap]
         return line
 
+    def _dad_joke_looks_ok(self, joke: str, cap: int) -> bool:
+        """Quality gate: clean, complete setup+punchline (not truncated)."""
+        j = (joke or "").strip()
+        if not j or self._is_err(j):
+            return False
+        if len(j) > cap + 20:
+            return False
+        low = f" {j.lower()} "
+        dirty_bits = (
+            " damn", " hell", " crap", "sexy", "nude", "kill", "drug",
+            "nsfw", "****", " fuck", " shit", " ass ", " porn",
+        )
+        if any(b in low for b in dirty_bits):
+            return False
+        if len(j) < 18:
+            return False
+        if low.strip().startswith("lfg") or "looking for group" in low:
+            return False
+        # Incomplete: ends with bare ? (setup only) or trailing "…" mid-thought
+        stripped = j.rstrip()
+        if stripped.endswith("?") and stripped.count("?") == 1 and len(stripped) < 55:
+            # Single question with no answer after it
+            # Allow short anti-jokes that ARE the punchline if very short? No — need payoff
+            # If nothing after the last ?, it's incomplete
+            return False
+        if stripped.endswith("?") or stripped.endswith("…") or stripped.endswith("..."):
+            # Question-only or ellipsis cut-off
+            q = stripped.rfind("?")
+            if q >= 0 and len(stripped[q + 1 :].strip()) < 2:
+                return False
+            if stripped.endswith("…") or stripped.endswith("..."):
+                return False
+        # "What do you call" / "Why did" must have text after the ?
+        for lead in ("what do you call", "why did", "why don't", "why can't", "how do you"):
+            if lead in j.lower():
+                if "?" not in j:
+                    return False
+                after = j.split("?", 1)[-1].strip(" -–—:")
+                if len(after) < 2:
+                    return False
+        return True
+
+    def _clean_dad_joke(self, raw: str, cap: int) -> str:
+        """Light clean that keeps full setup+punchline (not first-line only)."""
+        line = (raw or "").strip().strip('"').strip("'")
+        for prefix in (
+            "Dad joke:", "Joke:", "Here's a joke:", "Here is a joke:",
+            "Output:", "Answer:",
+        ):
+            if line.lower().startswith(prefix.lower()):
+                line = line[len(prefix):].strip()
+        # Join multi-line into one chat-friendly string
+        line = " ".join(p.strip() for p in line.replace("\r", "\n").split("\n") if p.strip())
+        line = line.replace('"', "").replace("“", "").replace("”", "")
+        if len(line) > cap:
+            # Prefer keep punchline: cut from the start of setup if needed, else hard cap
+            line = line[:cap].rstrip()
+            # If we cut mid-word, drop the fragment
+            if " " in line:
+                line = line.rsplit(" ", 1)[0]
+        return line.strip()
+
     def generate_dad_joke(self):
-        """Always-clean dad joke for chat. Hard cap 150 (or lower game limit)."""
+        """AI-first clean dad joke (classic patterns). Offline pack only if AI fails."""
         self._last_gen_mode = "dadjoke"
         cap = self._dad_joke_cap()
+        pattern = random.choice(DAD_JOKE_PATTERNS)
+        spark = random.choice(
+            [
+                "coffee", "socks", "bread", "dogs", "math", "elevator", "stairs",
+                "cheese", "birds", "clocks", "shoes", "soup", "plants", "parking",
+                "library", "weather", "batteries", "mirrors", "pencils", "traffic",
+            ]
+        )
         prompt = (
-            f"Write ONE original clean dad joke under {cap} characters.\n"
-            "Family-friendly only. No innuendo, swearing, insults, or dark humor.\n"
-            "Classic pun energy. Output only the joke."
+            f"Write ONE original clean dad joke. Max {cap} characters.\n"
+            f"Structure: {pattern}.\n"
+            f"Topic spark (optional): {spark}.\n"
+            "MUST include BOTH the setup AND the full punchline — never stop after the question.\n"
+            "Example of COMPLETE: What do you call a bread that's always late? A loaf-er.\n"
+            "Example of BAD (incomplete): What do you call a bread that's always late?\n"
+            "Family-friendly only. Groan-worthy pun.\n"
+            "Output only the finished joke text."
         )
 
         def done(reply: str):
-            if self._is_err(reply) or not reply or len(reply) > cap + 10:
-                reply = self._pick_dad_joke_local()
-                self.show_toast("Dad joke pack", kind="info")
-            else:
-                reply = self._clean_line(reply, cap)
-                # If model went off-brand, fall back
-                low = reply.lower()
-                dirty_bits = (
-                    " damn", " hell", " crap", "sexy", "nude", "kill", "drug",
-                    "nsfw", "****",
+            cleaned = self._clean_dad_joke(reply, cap)
+            if not self._dad_joke_looks_ok(cleaned, cap):
+                cleaned = self._pick_dad_joke_local()
+                self.show_toast(
+                    "Dad joke pack"
+                    if getattr(self, "_llm_online", None) is False
+                    else "Dad joke · finished from pack",
+                    kind="info",
                 )
-                if any(b in f" {low}" for b in dirty_bits):
-                    reply = self._pick_dad_joke_local()
-                    self.show_toast("Kept it clean", kind="info")
-                else:
-                    reply = self._dedupe_against_history(reply, fallback=self._pick_dad_joke_local())
-            self._apply_line_to_outputs(reply, also_ai=True)
-            self.set_status(f"Dad joke · {len(reply)}/{cap}")
-
-        # Local pack often for snappy clean results
-        if random.random() < 0.40:
-            line = self._pick_dad_joke_local()
-            self.session_gens += 1
-            self.update_session_chip()
-            self._apply_line_to_outputs(line, also_ai=True)
-            self.set_status(f"Dad joke · pack · {len(line)}/{cap}")
-            return
+            else:
+                cleaned = self._dedupe_against_history(
+                    cleaned, fallback=self._pick_dad_joke_local()
+                )
+            self._apply_line_to_outputs(cleaned, also_ai=True)
+            self.set_status(f"Dad joke · {len(cleaned)}/{cap}")
 
         self.run_llm_async(prompt, on_done=done, job="dadjoke")
 
@@ -7860,10 +10210,31 @@ class GamersChatHelper:
         self._last_gen_mode = "comeback"
         game = self.game_var.get()
         activity = self.activity_var.get()
+        lim = self.limit()
+        aim = max(20, min(lim, 72))
+        annotated = self.annotate_text_with_vocab(user_input, game)
+        # Few-shot style anchors without forcing copy
+        examples = (
+            "Examples of good energy (style only, do NOT copy):\n"
+            "- fair\n"
+            "- lol yeah\n"
+            "- true, market's weird rn\n"
+            "- i can hop if still need\n"
+            "- oof that tax\n"
+            "- wb tax is rough\n"
+            "- dg? which one\n"
+        )
         prompt = (
-            f"Someone in {game} chat ({activity}) said:\n\"{user_input}\"\n\n"
-            f"Write ONE natural clap-back / reply as a fellow player.\n"
-            f"React to what they said. Do not LFG or recruit unless they asked."
+            f"In {game} chat ({activity}), another player said:\n"
+            f"\"{annotated}\"\n\n"
+            f"Write ONE short reply you would actually type.\n"
+            f"Decode any game shorthand correctly (see gloss if present).\n"
+            f"Understated and human. React to their words.\n"
+            f"Prefer under {aim} characters (hard max {lim}).\n"
+            f"No superlatives, no hype, no essay, no 'as a player'.\n"
+            f"No LFG/recruit unless they asked for a group.\n"
+            f"{examples}"
+            f"Output only the reply."
         )
 
         def done(reply: str):
@@ -7871,9 +10242,15 @@ class GamersChatHelper:
                 reply = self._pick_comeback_local(user_input)
                 self.show_toast("Offline reply pack", kind="info")
             else:
-                reply = self._dedupe_against_history(
-                    reply, fallback=self._pick_comeback_local(user_input)
-                )
+                cleaned = self._clean_line(reply, lim)
+                if self._reply_too_hype(cleaned):
+                    # One soft retry path: use offline short line rather than bad hype
+                    reply = self._pick_comeback_local(user_input)
+                    self.show_toast("Kept reply low-key", kind="info")
+                else:
+                    reply = self._dedupe_against_history(
+                        cleaned, fallback=self._pick_comeback_local(user_input)
+                    )
             self._apply_line_to_outputs(reply, also_ai=True)
             self.set_status("Reply ready")
 
@@ -7890,11 +10267,19 @@ class GamersChatHelper:
         activity = self.activity_var.get()
         self._last_gen_mode = "triple"
         if user_input:
+            lim = self.limit()
+            aim = max(20, min(lim, 72))
+            annotated = self.annotate_text_with_vocab(user_input, game)
             prompt = (
-                f"Someone in {game} ({activity}) said:\n\"{user_input}\"\n\n"
-                f"Three DIFFERENT replies:\n"
-                f"1 = safe/helpful\n2 = funny\n3 = spicy playful\n"
-                f"Each must answer them. No LFG unless they asked."
+                f"In {game} chat ({activity}), they said:\n\"{annotated}\"\n\n"
+                f"Decode any game shorthand correctly (see gloss if present).\n"
+                f"Three DIFFERENT short replies a real player might type:\n"
+                f"1 = dry / minimal\n"
+                f"2 = friendly / helpful\n"
+                f"3 = light tease (still low-key)\n"
+                f"Each under ~{aim} chars. No superlatives, no hype, no essays.\n"
+                f"Each must respond to what they said. No LFG unless they asked.\n"
+                f"Number them 1. 2. 3. only."
             )
             job = "triple"
         elif seed:
@@ -7948,7 +10333,7 @@ class GamersChatHelper:
                     self.show_toast("Offline pack ×3", kind="info")
                 self.ui_safe(lambda: self._show_multi_results(results))
 
-            self.root.after(0, finish)
+            self.schedule_ui(finish)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -7958,8 +10343,11 @@ class GamersChatHelper:
             self.generate_response()
         elif mode == "triple":
             self.generate_triple()
-        elif mode == "recruit":
-            self.ai_fit_recruitment()
+        elif mode in ("recruit", "recruit_variant"):
+            if hasattr(self, "generate_recruit_variant"):
+                self.generate_recruit_variant(n=1)
+            else:
+                self.ai_fit_recruitment()
         elif mode == "lfg":
             self.generate_lfg()
         elif mode == "noise":
@@ -8089,10 +10477,25 @@ class GamersChatHelper:
                 )
             else:
                 loc_rule = f"You MUST include the location: {loc} (e.g. @ {loc})."
+        # Content-specific shorthand hint for this LFG
+        shorthand = ""
+        lab = (info.get("label") or "").lower()
+        if "dungeon" in lab:
+            shorthand = "Players often write DG for Dungeon — DG is valid and natural."
+        elif "world boss" in lab:
+            shorthand = "Players almost always write WB for World Boss — prefer WB."
+        elif "combat zone" in lab:
+            shorthand = "Players write CZ for Combat Zone — prefer CZ."
+        vocab_hits = ""
+        vb = self.vocab_prompt_block(game)
+        if vb:
+            vocab_hits = "Use only shorthand that matches the selected content.\n"
+
         return (
             f"Write ONE LFG/LFM chat line for {game}.\n"
             f"CONTENT (general type): {info['label']}\n"
             f"What it is: {info.get('brief', info['label'])}\n"
+            f"{shorthand}\n"
             f"LOCATION (spot or dungeon name): {loc or 'none'}\n"
             f"PARTY FINDER: {'YES — include the phrase Party Finder' if pf else 'NO — do not mention Party Finder'}.\n"
             f"You MUST clearly name the content using natural player words "
@@ -8100,6 +10503,7 @@ class GamersChatHelper:
             f"{loc_rule}\n"
             f"Need / party shape: {need} — {need_hint}.\n"
             f"Preferred shape: LFG + content + @ location + optional 'in Party Finder' + need.\n"
+            f"{vocab_hits}"
             f"Good example shape: {example}\n"
             f"Do NOT invent other locations/dungeons. Stay on {loc or 'the selected content'}.\n"
             f"Do NOT mention: {never}.\n"
@@ -8168,9 +10572,43 @@ class GamersChatHelper:
             return
         self.spice_phrase(text)
 
+    def _host_from_api_url(self, url: str) -> str:
+        """Extract host:port (no scheme/path) from a chat completions URL."""
+        u = (url or "").strip()
+        if not u:
+            return LM_DEFAULT_LOCAL_HOST
+        for prefix in ("https://", "http://"):
+            if u.lower().startswith(prefix):
+                u = u[len(prefix):]
+                break
+        # strip path
+        u = u.split("/", 1)[0].strip()
+        return u or LM_DEFAULT_LOCAL_HOST
+
+    def _api_url_from_host(self, host: str) -> str:
+        """Build chat completions URL from host, host:port, or full URL."""
+        h = (host or "").strip()
+        if not h:
+            h = LM_DEFAULT_LOCAL_HOST
+        # Already a full chat completions URL
+        if "/v1/chat/completions" in h:
+            return self._normalize_api_url(h)
+        # Full base like http://ip:1234 or http://ip:1234/v1
+        if h.lower().startswith("http://") or h.lower().startswith("https://"):
+            base = h.rstrip("/")
+            if base.lower().endswith("/v1"):
+                base = base[:-3].rstrip("/")
+            return self._normalize_api_url(base + "/v1/chat/completions")
+        # bare host or host:port
+        if "://" not in h:
+            if ":" not in h:
+                h = f"{h}:{LM_DEFAULT_PORT}"
+            return self._normalize_api_url(f"http://{h}/v1/chat/completions")
+        return self._normalize_api_url(h)
+
     def _normalize_api_url(self, url: str) -> str:
         """Rewrite localhost → 127.0.0.1 so Windows IPv6 lag does not fake offline."""
-        u = (url or "").strip() or "http://127.0.0.1:1234/v1/chat/completions"
+        u = (url or "").strip() or f"http://{LM_DEFAULT_LOCAL_HOST}/v1/chat/completions"
         # Common LM Studio defaults
         for bad, good in (
             ("http://localhost:", "http://127.0.0.1:"),
@@ -8181,6 +10619,8 @@ class GamersChatHelper:
             if u.lower().startswith(bad):
                 u = good + u[len(bad):]
                 break
+        if not u.endswith("/v1/chat/completions") and "/v1/" not in u:
+            u = u.rstrip("/") + "/v1/chat/completions"
         return u
 
     def _api_base(self, url: Optional[str] = None) -> str:
@@ -8189,17 +10629,61 @@ class GamersChatHelper:
             return u.rsplit("/v1/", 1)[0].rstrip("/")
         return u.rstrip("/")
 
+    def _llm_headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        key = ""
+        if hasattr(self, "lm_api_key_var"):
+            try:
+                key = (self.lm_api_key_var.get() or "").strip()
+            except Exception:
+                key = ""
+        if not key:
+            key = (getattr(self, "lm_api_key", "") or "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _selected_lm_model(self) -> str:
+        """Model id for chat/completions — prefer UI selection, else first cached loaded model."""
+        for candidate in (
+            (self.lm_model_var.get() if hasattr(self, "lm_model_var") else "") or "",
+            getattr(self, "lm_model", "") or "",
+        ):
+            m = str(candidate).strip()
+            if m and not m.startswith("("):
+                return m
+        cache = getattr(self, "_lm_models_cache", None) or []
+        if cache:
+            return str(cache[0])
+        # LM Studio accepts this alias when a model is loaded
+        return "local-model"
+
     def _llm_probe_urls(self) -> list[str]:
-        """Candidate /v1/models URLs — IPv4 first, then original host."""
-        primary = self._normalize_api_url(getattr(self, "api_url", "") or "")
+        """Candidate /v1/models URLs — configured host first; local fallback only in Local mode."""
+        # Prefer live UI host if present
+        try:
+            if hasattr(self, "lm_host_var"):
+                host = (self.lm_host_var.get() or "").strip()
+                if host:
+                    primary = self._api_url_from_host(host)
+                else:
+                    primary = self._normalize_api_url(getattr(self, "api_url", "") or "")
+            else:
+                primary = self._normalize_api_url(getattr(self, "api_url", "") or "")
+        except Exception:
+            primary = self._normalize_api_url(getattr(self, "api_url", "") or "")
+
         bases = [self._api_base(primary)]
-        # If user somehow still has another host form, keep both
-        raw = (getattr(self, "api_url", "") or "").strip()
-        if raw and "localhost" in raw.lower():
-            bases.append(raw.rsplit("/v1/", 1)[0].rstrip("/") if "/v1/" in raw else raw.rstrip("/"))
-        # Always try default LM Studio port as last resort
-        if "127.0.0.1:1234" not in " ".join(bases):
-            bases.append("http://127.0.0.1:1234")
+        mode = getattr(self, "lm_mode", "Local")
+        if hasattr(self, "lm_mode_var"):
+            try:
+                mode = self.lm_mode_var.get() or mode
+            except Exception:
+                pass
+        # Local only: also try classic LM Studio port if user typed something odd
+        if str(mode).lower().startswith("local"):
+            if "127.0.0.1:1234" not in " ".join(bases):
+                bases.append(f"http://{LM_DEFAULT_LOCAL_HOST}")
         seen = set()
         out = []
         for b in bases:
@@ -8209,35 +10693,59 @@ class GamersChatHelper:
             out.append(b.rstrip("/") + "/v1/models")
         return out
 
-    def _probe_llm_server(self) -> tuple[bool, str]:
+    def _probe_llm_server(self, full: bool = False):
         """
-        Returns (online, model_id_or_reason).
-        Uses 127.0.0.1 first; longer timeout; accepts any 2xx on /v1/models.
+        Probe LM Studio OpenAI-compatible /v1/models.
+        Returns (online, detail, model_ids) when full=True,
+        else (online, detail) for the status pulse.
+        detail = first loaded model id, or error reason.
         """
         last_err = "unreachable"
+        headers = self._llm_headers()
+        # Drop Content-Type on GET (harmless but cleaner)
+        get_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+        mode = getattr(self, "lm_mode", "Local")
+        if hasattr(self, "lm_mode_var"):
+            try:
+                mode = self.lm_mode_var.get() or mode
+            except Exception:
+                pass
+        # Remote may be slower on LAN
+        timeout = (3.5, 6.0) if str(mode).lower().startswith("remote") else (2.0, 4.0)
+
         for models_url in self._llm_probe_urls():
             try:
-                # connect+read: Windows localhost→IPv6 can burn ~1.5s alone
-                r = requests.get(models_url, timeout=(2.0, 4.0))
+                r = requests.get(models_url, headers=get_headers or None, timeout=timeout)
                 if 200 <= r.status_code < 300:
-                    model_id = ""
+                    model_ids: list[str] = []
                     try:
                         data = r.json()
                         items = data.get("data") or []
                         if items and isinstance(items, list):
-                            model_id = str(items[0].get("id") or "").strip()
+                            for it in items:
+                                if not isinstance(it, dict):
+                                    continue
+                                mid = str(it.get("id") or "").strip()
+                                if mid and mid not in model_ids:
+                                    model_ids.append(mid)
                     except Exception:
-                        model_id = ""
-                    # If we reached via 127.0.0.1, pin api_url so chat uses the fast path
+                        model_ids = []
+                    model_id = model_ids[0] if model_ids else "ready"
+                    self._lm_models_cache = list(model_ids)
+                    # Pin api_url to the base we actually reached
                     try:
-                        if "127.0.0.1" in models_url:
-                            base = models_url.rsplit("/v1/", 1)[0]
-                            want = base.rstrip("/") + "/v1/chat/completions"
-                            if self._normalize_api_url(self.api_url) != want:
-                                self.api_url = want
+                        base = models_url.rsplit("/v1/", 1)[0]
+                        want = base.rstrip("/") + "/v1/chat/completions"
+                        if self._normalize_api_url(self.api_url) != want:
+                            self.api_url = want
+                        # Keep host field in sync with successful probe
+                        host_disp = self._host_from_api_url(want)
+                        self.lm_host = host_disp
                     except Exception:
                         pass
-                    return True, model_id or "ready"
+                    if full:
+                        return True, model_id, model_ids
+                    return True, model_id
                 last_err = f"HTTP {r.status_code}"
             except requests.exceptions.Timeout:
                 last_err = "timeout"
@@ -8245,18 +10753,23 @@ class GamersChatHelper:
                 last_err = "no server"
             except Exception as e:
                 last_err = type(e).__name__
+        if full:
+            return False, last_err, []
         return False, last_err
 
     def pulse_llm_status(self):
+        if not self._tk_alive():
+            return
         gen = self._llm_pulse_gen
 
         def check():
-            if gen != self._llm_pulse_gen:
+            # Worker thread: network only
+            if gen != self._llm_pulse_gen or not getattr(self, "_alive", False):
                 return
-            ok, detail = self._probe_llm_server()
+            ok, detail, models = self._probe_llm_server(full=True)
 
             def apply():
-                if gen != self._llm_pulse_gen:
+                if gen != self._llm_pulse_gen or not self._tk_alive():
                     return
                 if not hasattr(self, "llm_dot"):
                     return
@@ -8265,35 +10778,64 @@ class GamersChatHelper:
                         return
                     self._llm_online = bool(ok)
                     if ok:
+                        # Prefer saved selection if still present; else default loaded model
+                        preferred = ""
+                        if hasattr(self, "lm_model_var"):
+                            preferred = (self.lm_model_var.get() or "").strip()
+                            if preferred.startswith("("):
+                                preferred = ""
+                        preferred = preferred or (getattr(self, "lm_model", "") or "")
+                        if models:
+                            self._populate_lm_model_menu(models, preferred=preferred, online=True)
+                        model_show = self._selected_lm_model()
+                        if model_show == "local-model":
+                            model_show = detail
                         # Keep chip short; full model id is in the hover tip
                         self.llm_dot.configure(text="AI · on", text_color=C["success"])
+                        mode = getattr(self, "lm_mode", "Local")
+                        if hasattr(self, "lm_mode_var"):
+                            try:
+                                mode = self.lm_mode_var.get() or mode
+                            except Exception:
+                                pass
                         tip(
                             self.llm_dot,
-                            "LOCAL AI SERVER (LM Studio) — online\n"
-                            f"Model: {detail}\n"
+                            "LM STUDIO AI SERVER — online\n"
+                            f"Model: {model_show}\n"
+                            f"Mode: {mode}\n"
                             f"API: {self._normalize_api_url(self.api_url)}\n"
-                            "Used for Write / dad jokes / vision OCR.\n"
-                            "If offline, the app still serves stock packs.",
+                            "Click → Setup to change host / model.\n"
+                            "Used for Write / dad jokes / vision OCR.",
                         )
+                        self._set_lm_conn_status(True, str(model_show))
                     else:
                         self.llm_dot.configure(text="AI · off", text_color=C["danger"])
+                        host = getattr(self, "lm_host", "") or LM_DEFAULT_LOCAL_HOST
+                        if hasattr(self, "lm_host_var"):
+                            try:
+                                host = (self.lm_host_var.get() or host).strip() or host
+                            except Exception:
+                                pass
                         tip(
                             self.llm_dot,
-                            "LOCAL AI SERVER — offline\n"
+                            "LM STUDIO AI SERVER — offline\n"
                             f"Last check: {detail}\n"
+                            f"Host: {host}\n"
                             "Write still works via offline packs (LFG/activity/noise/etc).\n"
-                            "1) Open LM Studio  2) Load a model  3) Start Local Server\n"
-                            "Default: http://127.0.0.1:1234",
+                            "1) Open LM Studio  2) Load a model  3) Start Server\n"
+                            "Click → Setup for Local/Remote + Test connection.",
                         )
+                        self._set_lm_conn_status(False, detail or "unreachable")
                 except Exception:
                     return
 
-            try:
-                self.root.after(0, apply)
-                if gen == self._llm_pulse_gen:
-                    self.root.after(8000, lambda: threading.Thread(target=check, daemon=True).start())
-            except Exception:
-                pass
+            if not self.schedule_ui(apply):
+                return
+            if gen == self._llm_pulse_gen and getattr(self, "_alive", False):
+                self.schedule_ui(
+                    lambda: threading.Thread(target=check, daemon=True).start(),
+                    delay_ms=8000,
+                )
 
         threading.Thread(target=check, daemon=True).start()
 
@@ -8335,7 +10877,11 @@ class GamersChatHelper:
             "lfg": self.generate_lfg,
             "activity": self.generate_activity_line,
             "reply": self.generate_response_from_quick,
-            "recruit": self.ai_fit_recruitment if hasattr(self, "ai_fit_recruitment") else self.generate_lfg,
+            "recruit": (
+                (lambda: self.generate_recruit_variant(n=1, save_as_new=False))
+                if hasattr(self, "generate_recruit_variant")
+                else self.ai_fit_recruitment
+            ),
             "noise": self.generate_noise,
         }
         fn = dispatch.get(key, self.generate_lfg)
@@ -8514,15 +11060,14 @@ class GamersChatHelper:
         self.root.after(1500, self._clip_watch_tick)
 
     def _clip_watch_tick(self):
+        if not self._tk_alive():
+            return
         try:
             if hasattr(self, "clip_watch_enabled") and self.clip_watch_enabled.get():
                 self._clip_watch_once()
         except Exception:
             pass
-        try:
-            self.root.after(2000, self._clip_watch_tick)
-        except Exception:
-            pass
+        self.schedule_ui(self._clip_watch_tick, delay_ms=2000)
 
     def _clip_watch_once(self):
         """If clipboard is a pure number, offer it to flip Buy/Sell fields."""
@@ -8760,7 +11305,7 @@ class GamersChatHelper:
                 self._apply_economy_result(parsed, engine + "·reprice")
                 self.show_toast("Re-priced last shot", kind="ok")
 
-            self.root.after(0, done)
+            self.schedule_ui(done)
 
         threading.Thread(target=work, daemon=True).start()
 
