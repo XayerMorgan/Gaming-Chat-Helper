@@ -1758,6 +1758,8 @@ class GamersChatHelper:
         self.saved_steam_log_enabled = True
         self.saved_steam_log_minutes = 15
         self.saved_steam_region_focus = "All"
+        self.saved_recruit_multiples = False
+        self.saved_recruit_multiples_n = 3
         self.saved_lfg_target = "EXP / Loot Grind"
         self.saved_lfg_need = "Anyone"
         self.saved_lfg_defaults: dict[str, str] = {}
@@ -1873,6 +1875,12 @@ class GamersChatHelper:
                 self.saved_focus_mode = bool(data.get("focus_mode", False))
                 self.saved_hotkeys_enabled = bool(data.get("hotkeys_enabled", True))
                 self.saved_clip_watch = bool(data.get("clip_watch", True))
+                self.saved_recruit_multiples = bool(data.get("recruit_multiples", False))
+                try:
+                    rmn = int(data.get("recruit_multiples_n", 3) or 3)
+                except Exception:
+                    rmn = 3
+                self.saved_recruit_multiples_n = max(2, min(10, rmn))
                 macros = data.get("macros") or []
                 if isinstance(macros, list):
                     self.saved_macros = [str(m)[:200] for m in macros][:MACROS_MAX]
@@ -2124,6 +2132,12 @@ class GamersChatHelper:
                 self.clip_watch_enabled.get() if hasattr(self, "clip_watch_enabled")
                 else getattr(self, "saved_clip_watch", True)
             ),
+            "recruit_multiples": bool(
+                self.recruit_multiples_var.get()
+                if hasattr(self, "recruit_multiples_var")
+                else getattr(self, "saved_recruit_multiples", False)
+            ),
+            "recruit_multiples_n": self._recruit_multiples_n_saved(),
             "macros": list(getattr(self, "macro_slots", ["", "", ""]))[:MACROS_MAX],
             "economy_history": list(getattr(self, "economy_history", []))[-40:],
             "flip_fee": (
@@ -5185,16 +5199,94 @@ class GamersChatHelper:
             "Turn on SEED DIRECTIVE above for standing guidance on every AI write.",
         )
 
-        # Primary: fully AI-generated pitch (needs guild name)
-        self._pack_primary_cta(
-            parent,
-            "Write recruit  ·  F6",
-            self.generate_recruit_fresh,
-            tip_text=(
-                "Completely new recruiting line from guild name + seed guidance.\n"
-                "Does not require an existing pitch. Save when you like it."
-            ),
+        # Primary: Write recruit + Multiples (n options → picker popup)
+        if not hasattr(self, "recruit_multiples_var"):
+            self.recruit_multiples_var = tk.BooleanVar(
+                value=bool(getattr(self, "saved_recruit_multiples", False))
+            )
+        try:
+            n0 = int(getattr(self, "saved_recruit_multiples_n", 3) or 3)
+        except Exception:
+            n0 = 3
+        n0 = max(2, min(10, n0))
+        if not hasattr(self, "recruit_multiples_n_var"):
+            self.recruit_multiples_n_var = tk.StringVar(value=str(n0))
+        else:
+            try:
+                self.recruit_multiples_n_var.set(str(n0))
+            except Exception:
+                pass
+
+        write_row = ctk.CTkFrame(parent, fg_color="transparent")
+        write_row.pack(fill="x", padx=pad(14), pady=(pad(4), pad(6)))
+        write_btn = ctk.CTkButton(
+            write_row,
+            text="Write recruit  ·  F6",
+            height=sz(46),
+            font=f_ui(15, "bold"),
+            fg_color=C.get("primary", C["success"]),
+            hover_color=C.get("primary_h", C["success_h"]),
+            text_color=C.get("primary_text", "#04120a"),
+            border_width=0,
+            command=self.generate_recruit_fresh,
         )
+        write_btn.pack(side="left", fill="x", expand=True, padx=(0, pad(8)))
+        tip(
+            write_btn,
+            "Completely new recruiting line from guild name + seed guidance.\n"
+            "With Multiples on: generates several options in a picker popup.",
+        )
+        if not hasattr(self, "_primary_cta_btns"):
+            self._primary_cta_btns = []
+        self._primary_cta_btns.append(write_btn)
+        self.recruit_write_btn = write_btn
+
+        multi_box = ctk.CTkFrame(
+            write_row, fg_color=C["surface"], corner_radius=10,
+            border_width=1, border_color=C["line"],
+        )
+        multi_box.pack(side="right")
+        multi_inner = ctk.CTkFrame(multi_box, fg_color="transparent")
+        multi_inner.pack(padx=pad(8), pady=pad(6))
+
+        self.recruit_multiples_cb = ctk.CTkCheckBox(
+            multi_inner,
+            text="Multiples",
+            variable=self.recruit_multiples_var,
+            font=f_ui(12, "bold"),
+            text_color=C["text"],
+            fg_color=C.get("primary", C["success"]),
+            hover_color=C.get("primary_h", C["success_h"]),
+            border_color=C["line"],
+            checkmark_color=C.get("primary_text", "#04120a"),
+            command=self._on_recruit_multiples_toggle,
+        )
+        self.recruit_multiples_cb.pack(side="left", padx=(0, pad(6)))
+        tip(
+            self.recruit_multiples_cb,
+            "Generate several recruit lines at once (default 3, max 10).\n"
+            "Pick one for Your Line · star any for favorites.",
+        )
+
+        self.recruit_multiples_n_menu = ctk.CTkOptionMenu(
+            multi_inner,
+            values=[str(i) for i in range(2, 11)],
+            variable=self.recruit_multiples_n_var,
+            width=sz(52),
+            height=sz(28),
+            font=f_ui(12, "bold"),
+            fg_color=C["elevated"],
+            button_color=C["elevated"],
+            button_hover_color=C["hover"],
+            dropdown_fg_color=C["elevated"],
+            dropdown_hover_color=C["hover"],
+            text_color=C["text"],
+            command=self._on_recruit_multiples_n_change,
+        )
+        self.recruit_multiples_n_menu.pack(side="left")
+        tip(self.recruit_multiples_n_menu, "How many options to generate (2–10). Default 3.")
+        self._sync_recruit_multiples_ui()
+
         # Secondary: rewrite existing Your Line
         ctk.CTkButton(
             parent, text="AI variant (rewrite line)", height=sz(34), font=f_ui(12, "bold"),
@@ -11455,10 +11547,61 @@ class GamersChatHelper:
             joined = f"{tag} {rest}".strip()
         return joined[:lim]
 
+    def _on_recruit_multiples_toggle(self):
+        self._sync_recruit_multiples_ui()
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _on_recruit_multiples_n_change(self, choice=None):
+        if choice is not None and hasattr(self, "recruit_multiples_n_var"):
+            try:
+                self.recruit_multiples_n_var.set(str(choice))
+            except Exception:
+                pass
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _sync_recruit_multiples_ui(self):
+        """Enable/dim the count menu from Multiples checkbox."""
+        on = bool(
+            self.recruit_multiples_var.get()
+            if hasattr(self, "recruit_multiples_var")
+            else False
+        )
+        menu = getattr(self, "recruit_multiples_n_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.configure(state="normal" if on else "disabled")
+        except Exception:
+            pass
+
+    def _recruit_multiples_n_saved(self) -> int:
+        """Persisted Multiples count (2–10), even when the toggle is off."""
+        try:
+            if hasattr(self, "recruit_multiples_n_var"):
+                n = int((self.recruit_multiples_n_var.get() or "3"))
+            else:
+                n = int(getattr(self, "saved_recruit_multiples_n", 3) or 3)
+        except Exception:
+            n = 3
+        return max(2, min(10, n))
+
+    def _recruit_multiples_count(self) -> int:
+        """How many recruit lines to generate (1 when Multiples off; 2–10 when on)."""
+        if not hasattr(self, "recruit_multiples_var") or not self.recruit_multiples_var.get():
+            return 1
+        return self._recruit_multiples_n_saved()
+
     def generate_recruit_fresh(self):
         """
         Completely AI-generated recruiting line — no existing pitch required.
         Uses saved guild name as [GUILD NAME] + optional SEED DIRECTIVE + local direction.
+        With Multiples on: generate N (2–10, default 3) options and open a picker popup.
         """
         game = self.game_var.get()
         lim = self.limit()
@@ -11492,36 +11635,399 @@ class GamersChatHelper:
                 "No extra direction — invent a fresh, chat-native recruit pitch "
                 "around the guild tag. Keep it scannable and friendly.\n"
             )
-        prompt = (
-            f"Write ONE completely NEW guild recruiting chat line for {game}.\n"
-            f"This is NOT a rewrite of an existing pitch — invent a full formation from scratch.\n"
-            f"{self._guild_prompt_block()}"
-            f"{seed_block}"
-            f"{dir_bit}"
-            f"{self.intensity_instruction(job='recruit') if hasattr(self, 'intensity_instruction') else ''}\n"
-            f"Include: who you want, vibe (chill/serious), how to apply (whisper / PST / Party Finder) if natural.\n"
-            f"Do NOT invent Discord-only requirements unless the seed asked for them.\n"
-            f"Do NOT sound like a corporate ad.\n"
-            f"MUST include the guild tag exactly as {tag} (square brackets required).\n"
-            f"{house_bit}"
-            f"HARD LIMIT: under {lim} characters.\n"
-            f"Output ONLY the single recruitment line."
+        n = self._recruit_multiples_count()
+        intensity = (
+            self.intensity_instruction(job="recruit")
+            if hasattr(self, "intensity_instruction")
+            else ""
         )
         self._last_gen_mode = "recruit_fresh"
-        self.set_status("Writing recruit…")
         # Suggest pitch label from guild if empty
         if hasattr(self, "recruit_name_var") and not (self.recruit_name_var.get() or "").strip():
             self.recruit_name_var.set(f"{guild} · AI")
 
-        def on_done(reply: str):
-            self._apply_recruit_result(reply, save_as_new=False)
+        if n <= 1:
+            prompt = (
+                f"Write ONE completely NEW guild recruiting chat line for {game}.\n"
+                f"This is NOT a rewrite of an existing pitch — invent a full formation from scratch.\n"
+                f"{self._guild_prompt_block()}"
+                f"{seed_block}"
+                f"{dir_bit}"
+                f"{intensity}\n"
+                f"Include: who you want, vibe (chill/serious), how to apply (whisper / PST / Party Finder) if natural.\n"
+                f"Do NOT invent Discord-only requirements unless the seed asked for them.\n"
+                f"Do NOT sound like a corporate ad.\n"
+                f"MUST include the guild tag exactly as {tag} (square brackets required).\n"
+                f"{house_bit}"
+                f"HARD LIMIT: under {lim} characters.\n"
+                f"Output ONLY the single recruitment line."
+            )
+            self.set_status("Writing recruit…")
 
-        self.run_llm_async(
-            prompt,
-            on_done=on_done,
-            job="recruit_fresh",
-            seed_text=seed_block or direction or guild,
+            def on_done(reply: str):
+                self._apply_recruit_result(reply, save_as_new=False)
+
+            self.run_llm_async(
+                prompt,
+                on_done=on_done,
+                job="recruit_fresh",
+                seed_text=seed_block or direction or guild,
+            )
+            return
+
+        # Multiples: generate N options → picker popup
+        numbered = "\n".join(f"{i}. line" for i in range(1, n + 1))
+        prompt = (
+            f"Write {n} COMPLETELY DIFFERENT guild recruiting chat lines for {game}.\n"
+            f"Each is a brand-new pitch from scratch (not rewrites of each other).\n"
+            f"Vary hooks, rhythm, and who you're inviting — same guild, different angles.\n"
+            f"{self._guild_prompt_block()}"
+            f"{seed_block}"
+            f"{dir_bit}"
+            f"{intensity}\n"
+            f"Each line: who you want, vibe, how to apply (whisper / PST / Party Finder) if natural.\n"
+            f"Do NOT invent Discord-only requirements unless the seed asked for them.\n"
+            f"Do NOT sound like a corporate ad.\n"
+            f"MUST include the guild tag exactly as {tag} (square brackets required) in EVERY line.\n"
+            f"{house_bit}"
+            f"Each under {lim} characters.\n"
+            f"Output exactly:\n{numbered}"
         )
+        self.set_status(f"Writing recruit ×{n}…")
+        self._set_ready_status("thinking", C["warn"])
+
+        if self._busy:
+            self.set_status("Already generating…")
+            return
+        self._busy = True
+        seed_text = seed_block or direction or guild
+
+        def work():
+            used_offline = False
+            if getattr(self, "_llm_online", None) is False:
+                results = [self._pick_recruit_local() for _ in range(n)]
+                used_offline = True
+            else:
+                results = self.call_local_llm(prompt, n=n, job="recruit_fresh")
+                if results and all(self._is_err(r) for r in results):
+                    results = [self._pick_recruit_local() for _ in range(n)]
+                    used_offline = True
+                    self._llm_online = False
+                elif results and not all(self._is_err(r) for r in results):
+                    self._llm_online = True
+
+            def finish():
+                self._busy = False
+                self.session_gens += 1
+                self.update_session_chip()
+                cleaned = []
+                for r in results or []:
+                    if self._is_err(r):
+                        continue
+                    line = self._clean_line(r, lim)
+                    line = self._ensure_guild_brackets(line)
+                    if line and line not in cleaned:
+                        cleaned.append(line)
+                # Soft offline padding so the popup still has options
+                guard = 0
+                while len(cleaned) < n and guard < n + 5:
+                    guard += 1
+                    pad_line = self._pick_recruit_local()
+                    if pad_line:
+                        pad_line = self._ensure_guild_brackets(pad_line)
+                    if pad_line and pad_line not in cleaned:
+                        cleaned.append(pad_line)
+                cleaned = cleaned[:n]
+
+                def apply():
+                    if used_offline:
+                        self.show_toast("Offline pack (AI off)", kind="info")
+                    if not cleaned:
+                        self.show_toast("No recruit lines returned", kind="error")
+                        self._set_ready_status("offline", C["danger"])
+                        self.set_status("Recruit write failed")
+                        return
+                    self._last_variants = cleaned
+                    self._set_variant_buttons(cleaned)
+                    self._show_recruit_multiples_popup(cleaned)
+                    self._set_ready_status("ready", C["muted"])
+                    self.set_status(f"Recruit ×{len(cleaned)} ready — pick one")
+
+                self.ui_safe(apply)
+
+            self.schedule_ui(finish)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_recruit_multiples_popup(self, lines: list[str]):
+        """
+        Modal picker for multi-recruit results.
+        - Single-select one line → Use in Your Line (active chat / copy)
+        - Single or multi-select → add checked lines to favorites
+        """
+        lines = [(ln or "").strip() for ln in (lines or []) if (ln or "").strip()]
+        if not lines:
+            return
+
+        # Reuse / replace existing picker
+        existing = getattr(self, "_recruit_pick_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.destroy()
+            except Exception:
+                pass
+
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"Recruit options  ·  {len(lines)}")
+        # Height scales a bit with count
+        h = min(720, 220 + len(lines) * 58)
+        win.geometry(f"640x{h}")
+        win.minsize(480, 320)
+        win.configure(fg_color=C["bg"])
+        try:
+            win.transient(self.root)
+            win.grab_set()
+            win.attributes("-topmost", True)
+            win.after(200, lambda: win.attributes("-topmost", False))
+        except Exception:
+            pass
+        self._recruit_pick_win = win
+
+        header = ctk.CTkFrame(
+            win, fg_color=C["surface"], corner_radius=12,
+            border_width=1, border_color=C["line"],
+        )
+        header.pack(fill="x", padx=pad(12), pady=(pad(12), pad(6)))
+        ctk.CTkLabel(
+            header,
+            text=f"RECRUIT OPTIONS  ·  {len(lines)}",
+            font=f_ui(15, "bold"),
+            text_color=C["text"],
+        ).pack(side="left", padx=pad(14), pady=pad(12))
+        ctk.CTkLabel(
+            header,
+            text="Click a line for Your Line · check ★ to star",
+            font=f_ui(12),
+            text_color=C["muted"],
+        ).pack(side="right", padx=pad(14), pady=pad(12))
+
+        body = ctk.CTkScrollableFrame(
+            win, fg_color=C["surface"], corner_radius=12,
+            border_width=1, border_color=C["line"],
+        )
+        body.pack(fill="both", expand=True, padx=pad(12), pady=pad(6))
+
+        selected_idx = tk.IntVar(value=0)
+        fav_vars: list[tk.BooleanVar] = []
+        row_frames: list = []
+        lim = self.limit()
+
+        def _paint_selection():
+            sel = int(selected_idx.get())
+            for i, fr in enumerate(row_frames):
+                try:
+                    if i == sel:
+                        fr.configure(border_color=C.get("primary", C["success"]), border_width=2)
+                    else:
+                        fr.configure(border_color=C["line"], border_width=1)
+                except Exception:
+                    pass
+
+        def _select_row(idx: int):
+            selected_idx.set(idx)
+            _paint_selection()
+
+        for i, line in enumerate(lines):
+            fr = ctk.CTkFrame(
+                body, fg_color=C["elevated"], corner_radius=10,
+                border_width=2 if i == 0 else 1,
+                border_color=C.get("primary", C["success"]) if i == 0 else C["line"],
+            )
+            fr.pack(fill="x", padx=pad(8), pady=pad(4))
+            row_frames.append(fr)
+
+            top = ctk.CTkFrame(fr, fg_color="transparent")
+            top.pack(fill="x", padx=pad(10), pady=(pad(8), pad(2)))
+
+            # Radio-style index badge
+            badge = ctk.CTkLabel(
+                top,
+                text=f"{i + 1}",
+                width=sz(28),
+                font=f_ui(13, "bold"),
+                text_color=C.get("primary_text", "#04120a"),
+                fg_color=C.get("primary", C["success"]),
+                corner_radius=8,
+            )
+            badge.pack(side="left", padx=(0, pad(8)))
+
+            fav_var = tk.BooleanVar(value=False)
+            fav_vars.append(fav_var)
+            fav_cb = ctk.CTkCheckBox(
+                top,
+                text="★",
+                variable=fav_var,
+                width=sz(36),
+                font=f_ui(14, "bold"),
+                text_color=C["warn"],
+                fg_color=C["warn"],
+                hover_color=C.get("warn_h", C["warn"]),
+                border_color=C["line"],
+                checkmark_color="#1a1200",
+            )
+            fav_cb.pack(side="left", padx=(0, pad(6)))
+            tip(fav_cb, "Check to include this line when you Star selected.")
+
+            n_chars = len(line)
+            count_col = C["danger"] if n_chars > lim else (
+                C["warn"] if n_chars >= lim - 15 else C["success"]
+            )
+            ctk.CTkLabel(
+                top,
+                text=f"{n_chars}/{lim}",
+                font=f_ui(11),
+                text_color=count_col,
+            ).pack(side="right")
+
+            # Line text — wrap for readability
+            preview = line if len(line) <= 220 else line[:217] + "…"
+            txt = ctk.CTkLabel(
+                fr,
+                text=preview,
+                font=f_ui(13),
+                text_color=C["text"],
+                anchor="w",
+                justify="left",
+                wraplength=sz(540),
+            )
+            txt.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
+
+            # Click anywhere on row (except checkbox) selects for Your Line
+            for w in (fr, top, badge, txt):
+                try:
+                    w.bind("<Button-1>", lambda _e, idx=i: _select_row(idx))
+                except Exception:
+                    pass
+
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=pad(12), pady=(pad(4), pad(12)))
+
+        def close():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            if getattr(self, "_recruit_pick_win", None) is win:
+                self._recruit_pick_win = None
+
+        def use_selected():
+            idx = int(selected_idx.get())
+            if not (0 <= idx < len(lines)):
+                return
+            line = lines[idx]
+            self._last_gen_mode = "recruit_fresh"
+            self._apply_recruit_result(line, save_as_new=False)
+            self.show_toast("In Your Line — ready to copy", kind="ok")
+            close()
+
+        def star_checked():
+            chosen = [
+                lines[i]
+                for i, v in enumerate(fav_vars)
+                if v.get() and 0 <= i < len(lines)
+            ]
+            # If none checked, star the currently selected row (single-select path)
+            if not chosen:
+                idx = int(selected_idx.get())
+                if 0 <= idx < len(lines):
+                    chosen = [lines[idx]]
+            if not chosen:
+                self.show_toast("Nothing to star", kind="warn")
+                return
+            added = 0
+            for line in chosen:
+                text = (line or "").strip()
+                if not text:
+                    continue
+                if text in self.favorites:
+                    # Move to front if already starred
+                    self.favorites.remove(text)
+                self.favorites.insert(0, text)
+                added += 1
+            self.favorites = self.favorites[:30]
+            self.rebuild_quick_buttons()
+            self.refresh_history_ui()
+            self.save_settings()
+            if added == 1:
+                self.show_toast("Starred 1 line", kind="ok")
+            else:
+                self.show_toast(f"Starred {added} lines", kind="ok")
+
+        def use_and_star():
+            # Star checked (or selected), then put selected into Your Line
+            star_checked()
+            use_selected()
+
+        ctk.CTkButton(
+            foot,
+            text="Use in Your Line",
+            height=sz(40),
+            font=f_ui(13, "bold"),
+            fg_color=C.get("primary", C["success"]),
+            hover_color=C.get("primary_h", C["success_h"]),
+            text_color=C.get("primary_text", "#04120a"),
+            command=use_selected,
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        ctk.CTkButton(
+            foot,
+            text="★ Star selected",
+            height=sz(40),
+            font=f_ui(13, "bold"),
+            fg_color=C["elevated"],
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            text_color=C["text"],
+            command=star_checked,
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        ctk.CTkButton(
+            foot,
+            text="Use + star",
+            height=sz(40),
+            font=f_ui(12, "bold"),
+            fg_color=C["surface"],
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            text_color=C["text"],
+            command=use_and_star,
+        ).pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
+        ctk.CTkButton(
+            foot,
+            text="Close",
+            height=sz(40),
+            width=sz(80),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            hover_color=C["hover"],
+            command=close,
+        ).pack(side="left")
+
+        win.protocol("WM_DELETE_WINDOW", close)
+        try:
+            win.bind("<Escape>", lambda _e: close())
+            win.bind("<Return>", lambda _e: use_selected())
+        except Exception:
+            pass
+        try:
+            win.focus_force()
+        except Exception:
+            pass
 
     def generate_recruit_variant(self, n: int = 1, save_as_new: bool = False):
         """
@@ -11955,7 +12461,7 @@ class GamersChatHelper:
                     "Do NOT mention WB/world boss, CZ/combat zone, or DG/dungeon "
                     "unless they appear in the selected content or location name.\n"
                 )
-        elif cfg.get("use_terms") and job in ("recruit",):
+        elif cfg.get("use_terms") and job in ("recruit", "recruit_fresh", "recruit_variant"):
             terms = ", ".join(prof.get("terms", [])[:8])
             if terms:
                 base += f"Light native shorthand only when natural: {terms}.\n"
@@ -11987,6 +12493,13 @@ class GamersChatHelper:
                 "JOB: guild/clan recruitment line only.\n"
                 "Preserve facts from the user draft. Punchy and scannable.\n"
                 "Avoid stuffing fake system acronyms.\n"
+            ),
+            "recruit_fresh": (
+                "JOB: invent a completely NEW guild/clan recruitment chat line.\n"
+                "No existing pitch to rewrite — form it from guild name + direction only.\n"
+                "Punchy, scannable, chat-native. Include who/vibe/how-to-apply when natural.\n"
+                "If multiple numbered options are requested, make each distinctly different.\n"
+                "Do not invent Discord rules or benefits the user never asked for.\n"
             ),
             "recruit_variant": (
                 "JOB: rewrite an existing guild recruit pitch as a fresh VARIANT.\n"
@@ -12092,6 +12605,12 @@ class GamersChatHelper:
         # Prefer recruit_variant sampling even when n>1
         if job == "recruit_variant":
             sampling = self._sampling_payload("recruit_variant")
+        elif job == "recruit_fresh":
+            sampling = self._sampling_payload("recruit_fresh")
+        # Multi-option replies need more headroom (esp. recruit ×10)
+        if n > 1:
+            base_tok = int(sampling.get("max_tokens", 80) or 80)
+            sampling["max_tokens"] = min(900, max(base_tok, base_tok + (n - 1) * 70))
         self.api_url = self._normalize_api_url(self.api_url)
         payload = {
             "model": self._selected_lm_model(),
@@ -12310,7 +12829,7 @@ class GamersChatHelper:
             return self._pick_dad_joke_local()
         if j == "comeback":
             return self._pick_comeback_local(they_said)
-        if j in ("recruit", "recruit_variant"):
+        if j in ("recruit", "recruit_variant", "recruit_fresh"):
             return self._pick_recruit_local()
         if j in ("refine", "spice"):
             base = (seed_text or "").strip()
