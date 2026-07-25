@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+env/
+
+# Local app runtime / user data (do not commit)
+chat_helper_config.json
+recruit_templates.json
+economy_price_log.jsonl
+steam_players_log.txt
+session_export.txt
+last_chat_capture.png
+last_market_capture.png
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node (docx tooling)
+node_modules/
