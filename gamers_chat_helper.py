@@ -4017,21 +4017,49 @@ class GamersChatHelper:
 
         msg_head = ctk.CTkFrame(parent, fg_color="transparent")
         msg_head.pack(fill="x", padx=pad(14), pady=(0, 2))
-        ctk.CTkLabel(msg_head, text="Pitch text (seed)", font=f_ui(11), text_color=C["muted"]).pack(side="left")
+        ctk.CTkLabel(msg_head, text="Pitch text", font=f_ui(11), text_color=C["muted"]).pack(side="left")
         self.counter_label = ctk.CTkLabel(
             msg_head, text="0 / 150", font=f_ui(12, "bold"), text_color=C["success"],
         )
         self.counter_label.pack(side="right")
+
+        msg_row = ctk.CTkFrame(parent, fg_color="transparent")
+        msg_row.pack(fill="x", padx=pad(14), pady=(2, pad(4)))
         self.msg_textbox = ctk.CTkTextbox(
-            parent, height=sz(72), font=f_mono(13),
+            msg_row, height=sz(88), font=f_mono(13),
             fg_color=C["surface"], text_color=C["text"], border_width=0, corner_radius=10,
         )
-        self.msg_textbox.pack(fill="x", padx=pad(14), pady=(2, pad(4)))
+        self.msg_textbox.pack(side="left", fill="both", expand=True, padx=(0, pad(8)))
         self.msg_textbox.bind("<KeyRelease>", self.update_counter)
         tip(
             self.msg_textbox,
-            "Pitch text you edit and save.\n"
-            "AI variant rewrites this into Generated line — does NOT auto-save.",
+            "Your recruiting pitch — load, edit, or type here.\n"
+            "Copy sends this text to the clipboard (no AI required).\n"
+            "AI variant is optional and does not auto-save.",
+        )
+        pitch_side = ctk.CTkFrame(msg_row, fg_color="transparent", width=sz(120))
+        pitch_side.pack(side="right", fill="y")
+        pitch_side.pack_propagate(False)
+        self.recruit_copy_btn = ctk.CTkButton(
+            pitch_side, text="Copy", height=sz(52), font=f_ui(15, "bold"),
+            fg_color=C["success"], hover_color=C["success_h"], text_color="#04120a",
+            command=self.copy_recruitment,
+        )
+        self.recruit_copy_btn.pack(fill="x", pady=(0, pad(6)))
+        tip(
+            self.recruit_copy_btn,
+            "Copy this pitch to the clipboard as-is.\n"
+            "No AI · no variant · paste straight into game chat.",
+        )
+        ctk.CTkButton(
+            pitch_side, text="→ Line", height=sz(32), font=f_ui(11),
+            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            command=self.recruit_to_editor,
+        ).pack(fill="x")
+        tip(
+            pitch_side.winfo_children()[-1],
+            "Push this pitch into Generated line (still no AI).\n"
+            "Useful if you want to refine/trim there first.",
         )
 
         self.safety_progressbar = ctk.CTkProgressBar(
