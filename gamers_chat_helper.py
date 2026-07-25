@@ -18,7 +18,7 @@ import tkinter as tk
 import uuid
 import webbrowser
 from collections import Counter
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 from typing import Callable, Match, Optional
 
 import customtkinter as ctk
@@ -145,6 +145,7 @@ LAST_MARKET_PATH = os.path.join(APP_DIR, "last_market_capture.png")
 STEAM_LOG_PATH = os.path.join(APP_DIR, "steam_players_log.txt")
 ECONOMY_LOG_PATH = os.path.join(APP_DIR, "economy_price_log.jsonl")
 SESSION_EXPORT_PATH = os.path.join(APP_DIR, "session_export.txt")
+PROFILE_PACK_PATH = os.path.join(APP_DIR, "hyperline_profile.json")
 HELP_MANUAL_PATH = os.path.join(APP_DIR, "HELP_MANUAL.md")
 FEATURES_PATH = os.path.join(APP_DIR, "FEATURES.md")
 RECRUIT_TEMPLATES_PATH = os.path.join(APP_DIR, "recruit_templates.json")
@@ -3303,6 +3304,10 @@ class GamersChatHelper:
 
             file_m = tk.Menu(menubar, tearoff=0)
             file_m.add_command(label="Export session pack\tCtrl+E", command=self.export_session_pack)
+            file_m.add_separator()
+            file_m.add_command(label="Export profile pack…", command=self.export_profile_pack)
+            file_m.add_command(label="Import profile pack…", command=self.import_profile_pack)
+            file_m.add_separator()
             file_m.add_command(label="Open app folder", command=self.open_app_folder)
             file_m.add_separator()
             file_m.add_command(label="Restart app", command=self.restart_app)
@@ -4163,6 +4168,8 @@ class GamersChatHelper:
         menu.add_separator()
         menu.add_command(label="Oracle (F10)", command=self.run_oracle)
         menu.add_command(label="Export session (Ctrl+E)", command=self.export_session_pack)
+        menu.add_command(label="Export profile pack…", command=self.export_profile_pack)
+        menu.add_command(label="Import profile pack…", command=self.import_profile_pack)
         menu.add_command(label="Open Setup tab", command=self.open_lm_setup)
         menu.add_separator()
         menu.add_command(label="Restart app", command=self.restart_app)
@@ -9277,7 +9284,7 @@ class GamersChatHelper:
                 pass
 
     def refresh_recent_strip(self):
-        """Compact last lines under Your Line (max 4)."""
+        """Compact last lines under Your Line (max 3). Hide whole card when empty — less density."""
         if not hasattr(self, "recent_host"):
             return
         for w in self.recent_host.winfo_children():
@@ -9290,7 +9297,7 @@ class GamersChatHelper:
             t = (h or "").strip()
             if t and t not in items:
                 items.append(t)
-            if len(items) >= 4:
+            if len(items) >= 3:
                 break
         if hasattr(self, "clear_recent_btn"):
             try:
@@ -9299,12 +9306,23 @@ class GamersChatHelper:
                 )
             except Exception:
                 pass
+        # Collapse empty Recent to reclaim vertical space (simplicity)
+        if hasattr(self, "recent_card"):
+            try:
+                if not items:
+                    self.recent_card.pack_forget()
+                    return
+                if not self.recent_card.winfo_ismapped():
+                    if getattr(self, "quick_scroll", None) is not None:
+                        self.recent_card.pack(
+                            fill="x", padx=pad(10), pady=(0, pad(6)),
+                            before=self.quick_scroll,
+                        )
+                    else:
+                        self.recent_card.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
+            except Exception:
+                pass
         if not items:
-            ctk.CTkLabel(
-                self.recent_host,
-                text="No recent lines yet — Copy something to land it here.",
-                font=f_ui(11), text_color=C["muted"], anchor="w",
-            ).pack(fill="x", padx=pad(4), pady=pad(2))
             return
         for t in items:
             row = ctk.CTkFrame(self.recent_host, fg_color="transparent")
@@ -13599,6 +13617,7 @@ class GamersChatHelper:
         self.run_oracle()
 
     def toggle_focus_mode(self):
+        """Raid-night mode: pin + auto-copy + jump to Chat Generator. No extra chrome."""
         on = bool(self.focus_mode.get())
         if on:
             try:
@@ -13610,9 +13629,18 @@ class GamersChatHelper:
                 self.auto_copy.set(True)
             except Exception:
                 pass
-            self.show_toast("Focus mode · F6 write · F7 copy · F8 market", kind="ok")
-            if hasattr(self, "status_bar"):
-                self.set_status("FOCUS · F6 Write · F7 Copy · F8 Market · F9 Reprice · F10 Oracle")
+            try:
+                if hasattr(self, "hotkeys_enabled"):
+                    self.hotkeys_enabled.set(True)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "tabview"):
+                    self.tabview.set("Chat Generator")
+            except Exception:
+                pass
+            self.show_toast("Focus · Chat Generator · F6/F7", kind="ok")
+            self.set_status("FOCUS · F6 Write · F7 Copy · F8 Market · F9 Reprice")
         else:
             self.show_toast("Focus mode off", kind="info")
         self.save_settings()
@@ -13663,6 +13691,164 @@ class GamersChatHelper:
             self.set_status(f"Exported → {SESSION_EXPORT_PATH}")
         except Exception as e:
             self.show_toast(f"Export failed: {e}", kind="error")
+
+    def _build_profile_pack(self) -> dict:
+        """Portable setup (no secrets, no logs) — keep density off the main UI."""
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+        return {
+            "format": "hyperline_profile",
+            "version": 1,
+            "app_version": APP_VERSION,
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "default_game": (
+                self.game_var.get() if hasattr(self, "game_var") else "The Quinfall"
+            ),
+            "font_scale": getattr(self, "font_scale_key", "M"),
+            "guild_names": dict(getattr(self, "guild_names", {}) or {}),
+            "house_styles": self._house_styles_for_save() if hasattr(self, "_house_styles_for_save") else {},
+            "game_sites": dict(getattr(self, "game_sites", {}) or {}),
+            "macros": list(getattr(self, "macro_slots", ["", "", ""]) or [])[:MACROS_MAX],
+            "recruit_templates": list(getattr(self, "recruit_templates", []) or []),
+            "favorites": list(getattr(self, "favorites", []) or [])[:40],
+            "hotkeys_enabled": bool(
+                self.hotkeys_enabled.get() if hasattr(self, "hotkeys_enabled") else True
+            ),
+            "auto_copy": bool(self.auto_copy.get()) if hasattr(self, "auto_copy") else True,
+        }
+
+    def export_profile_pack(self):
+        """File → Export profile pack (guild, pitches, links, macros). No new chrome."""
+        path = filedialog.asksaveasfilename(
+            title="Export Hyperline profile",
+            defaultextension=".json",
+            initialfile="hyperline_profile.json",
+            initialdir=APP_DIR,
+            filetypes=[("Hyperline profile", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            data = self._build_profile_pack()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.show_toast("Profile exported", kind="ok")
+            self.set_status(f"Profile → {os.path.basename(path)}")
+        except Exception as e:
+            self.show_toast(f"Export failed: {e}", kind="error")
+
+    def import_profile_pack(self):
+        """File → Import profile pack. Confirms before merge."""
+        path = filedialog.askopenfilename(
+            title="Import Hyperline profile",
+            initialdir=APP_DIR,
+            filetypes=[("Hyperline profile", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Import failed", f"Could not read file:\n{e}")
+            return
+        if not isinstance(data, dict) or data.get("format") not in (
+            "hyperline_profile", None,
+        ):
+            # Allow plain dicts that look like our pack
+            if not isinstance(data, dict) or not any(
+                k in data for k in ("guild_names", "recruit_templates", "house_styles", "game_sites")
+            ):
+                messagebox.showerror("Import failed", "Not a Hyperline profile pack.")
+                return
+        if not messagebox.askyesno(
+            "Import profile?",
+            "Merge this profile into Hyperline?\n\n"
+            "• Guild names, house styles, game links\n"
+            "• Recruit pitches, favorites, macros\n"
+            "• Type size & a few preferences\n\n"
+            "Your current lines/history stay. Existing keys are overwritten.",
+        ):
+            return
+        try:
+            if isinstance(data.get("guild_names"), dict):
+                self.guild_names = {
+                    str(k): str(v).strip()[:60]
+                    for k, v in data["guild_names"].items()
+                    if str(v).strip()
+                }
+            if isinstance(data.get("house_styles"), dict):
+                self.house_styles = {
+                    str(k): str(v)[:500]
+                    for k, v in data["house_styles"].items()
+                    if str(v).strip()
+                }
+            if isinstance(data.get("game_sites"), dict):
+                self.game_sites = data["game_sites"]
+            if isinstance(data.get("recruit_templates"), list):
+                self.recruit_templates = [
+                    t for t in data["recruit_templates"] if isinstance(t, dict)
+                ]
+                try:
+                    self._save_recruit_file()
+                except Exception:
+                    pass
+            if isinstance(data.get("favorites"), list):
+                favs = [str(x).strip() for x in data["favorites"] if str(x).strip()]
+                self.favorites = favs[:40]
+            if isinstance(data.get("macros"), list):
+                macros = [str(m)[:200] for m in data["macros"]][:MACROS_MAX]
+                while len(macros) < MACROS_MAX:
+                    macros.append("")
+                self.macro_slots = macros
+            dg = data.get("default_game")
+            if dg in GAME_PROFILES and hasattr(self, "game_var"):
+                self.game_var.set(dg)
+                try:
+                    self.on_game_changed(dg, persist=False)
+                except Exception:
+                    pass
+            fs = data.get("font_scale", "M")
+            if fs in TYPE_PRESETS:
+                try:
+                    self.apply_type_scale(fs, rebuild=False)
+                except Exception:
+                    self.font_scale_key = fs
+            if "hotkeys_enabled" in data and hasattr(self, "hotkeys_enabled"):
+                self.hotkeys_enabled.set(bool(data["hotkeys_enabled"]))
+            if "auto_copy" in data and hasattr(self, "auto_copy"):
+                self.auto_copy.set(bool(data["auto_copy"]))
+            try:
+                self._load_guild_name_for_game()
+            except Exception:
+                pass
+            try:
+                self._load_house_style_into_ui()
+            except Exception:
+                pass
+            try:
+                self._refresh_recruit_ui(load_editor=True)
+            except Exception:
+                pass
+            try:
+                self.refresh_time_tab()
+            except Exception:
+                pass
+            try:
+                self.refresh_history_ui()
+            except Exception:
+                pass
+            try:
+                self.rebuild_quick_buttons()
+            except Exception:
+                pass
+            self.save_settings()
+            self.show_toast("Profile imported", kind="ok")
+            self.set_status(f"Imported · {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror("Import failed", str(e))
 
     def run_oracle(self):
         """Daily surprise: fortune + pop advice + random location."""
