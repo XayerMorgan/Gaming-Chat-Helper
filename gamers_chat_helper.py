@@ -240,14 +240,15 @@ HUD_MINSIZE = (400, 210)
 
 # Accessibility type scale — fonts grow more than chrome so layout stays balanced.
 # "control" = touch targets / button heights; "space" = padding (dampened).
+# ACTION: 3-tier type scale only (critique: avoid 5-step overkill)
 TYPE_PRESETS = {
-    "S":   {"font": 0.92, "control": 0.94, "space": 0.96, "label": "Small"},
+    "S":   {"font": 0.92, "control": 0.94, "space": 0.96, "label": "Compact"},
     "M":   {"font": 1.00, "control": 1.00, "space": 1.00, "label": "Default"},
-    "L":   {"font": 1.14, "control": 1.10, "space": 1.06, "label": "Large"},
-    "XL":  {"font": 1.28, "control": 1.18, "space": 1.12, "label": "Larger"},
-    "XXL": {"font": 1.44, "control": 1.28, "space": 1.18, "label": "Max"},
+    "L":   {"font": 1.16, "control": 1.10, "space": 1.06, "label": "Large"},
 }
-TYPE_SCALE_ORDER = ("S", "M", "L", "XL", "XXL")
+TYPE_SCALE_ORDER = ("S", "M", "L")
+# Legacy keys from older configs map into the 3-tier set
+TYPE_SCALE_LEGACY = {"XL": "L", "XXL": "L", "Small": "S", "Larger": "L", "Max": "L"}
 _TYPE = dict(TYPE_PRESETS["M"])
 _TYPE_KEY = "M"
 
@@ -394,10 +395,10 @@ def apply_theme_to_C(game: str) -> None:
 
 # Time tab — alarm presets + default per-game bookmarks
 TIME_ALARM_PRESETS = (
-    ("wife_aggro", "Wife aggro", "countdown", 15, "Time to check in / survive IRL"),
-    ("boss", "Time to boss", "countdown", 30, "World boss / event window"),
-    ("bedtime", "Bedtime / leave", "countdown", 60, "Wrap the session — go to bed or peace out"),
-    ("world_boss", "World boss loop", "interval", 60, "Remind every hour until you stop it"),
+    ("irl_checkin", "IRL check-in", "countdown", 15, "Reminder to check IRL / take a break"),
+    ("boss", "Boss timer", "countdown", 30, "World boss / event window"),
+    ("bedtime", "Session end", "countdown", 60, "Time to log off / go to bed"),
+    ("world_boss", "Boss every X min", "interval", 60, "Repeat until you pause"),
     ("generic", "Every X minutes", "interval", 10, "Generic repeating reminder"),
     ("custom_once", "Custom once", "countdown", 5, "One-shot custom countdown"),
 )
@@ -1217,7 +1218,15 @@ NOISE_PACKS: dict[int, list[str]] = {
 def set_type_scale(key: str) -> str:
     """Apply a named type preset globally. Returns the resolved key."""
     global _TYPE, _TYPE_KEY
-    key = key if key in TYPE_PRESETS else "M"
+    key = TYPE_SCALE_LEGACY.get(key, key)
+    if key not in TYPE_PRESETS:
+        # match by label
+        for k, p in TYPE_PRESETS.items():
+            if p["label"] == key:
+                key = k
+                break
+        else:
+            key = "M"
     _TYPE_KEY = key
     _TYPE = dict(TYPE_PRESETS[key])
     return key
@@ -1829,6 +1838,7 @@ class GamersChatHelper:
                 self.saved_noise_level = max(0, min(4, nl))
                 self.saved_show_banner = bool(data.get("show_banner", True))
                 fs = data.get("font_scale", "M")
+                fs = TYPE_SCALE_LEGACY.get(fs, fs)
                 self.saved_font_scale = fs if fs in TYPE_PRESETS else "M"
                 self.saved_lfg_target = data.get("lfg_target", self.saved_lfg_target)
                 self.saved_lfg_need = data.get("lfg_need", self.saved_lfg_need)
@@ -2710,7 +2720,7 @@ class GamersChatHelper:
             except Exception:
                 pass
         # Intent chrome
-        if hasattr(self, "intent_seg"):
+        if getattr(self, "intent_seg", None) is not None:
             try:
                 self.intent_seg.configure(
                     selected_color=acc,
@@ -2718,6 +2728,10 @@ class GamersChatHelper:
                 )
             except Exception:
                 pass
+        try:
+            self._refresh_intent_icons()
+        except Exception:
+            pass
         if hasattr(self, "intent_card"):
             try:
                 self.intent_card.configure(border_color=acc)
@@ -2761,8 +2775,8 @@ class GamersChatHelper:
         self._update_quick_out_meter()
 
     def _refresh_intent_icons(self):
-        """Show shared fantasy intent icons next to INTENT label row."""
-        host = getattr(self, "intent_icon_host", None)
+        """Rebuild large icon+label intent buttons (primary graphic affordance)."""
+        host = getattr(self, "intent_btn_host", None)
         if host is None:
             return
         for w in host.winfo_children():
@@ -2771,13 +2785,46 @@ class GamersChatHelper:
             except Exception:
                 pass
         self._intent_icon_imgs = []
+        self._intent_btns = {}
+        active = ""
+        try:
+            active = (self.generator_intent.get() or "lfg").strip()
+        except Exception:
+            active = "lfg"
+        icon_sz = max(36, sz(40))
         for key in INTENT_OPTIONS:
-            icon = self.assets.intent_icon(key, size=(sz(20), sz(20)))
+            lab = INTENT_LABELS.get(key, key.upper())
+            icon = self.assets.intent_icon(key, size=(icon_sz, icon_sz))
             if icon:
                 self._intent_icon_imgs.append(icon)
-                ctk.CTkLabel(host, text="", image=icon, width=sz(22), height=sz(22)).pack(
-                    side="left", padx=(0, pad(4))
-                )
+            selected = key == active
+            cell = ctk.CTkFrame(host, fg_color="transparent")
+            cell.pack(side="left", fill="both", expand=True, padx=pad(3))
+            kw = dict(
+                text=lab,
+                height=sz(88),
+                font=f_ui(13, "bold"),
+                fg_color=C.get("primary", C["success"]) if selected else C["surface"],
+                hover_color=C.get("primary_h", C["hover"]) if selected else C["hover"],
+                text_color=C.get("primary_text", "#04120a") if selected else C["text"],
+                border_width=0 if selected else 1,
+                border_color=C["line"],
+                corner_radius=12,
+                command=lambda k=key: self.set_intent(k),
+            )
+            if icon is not None:
+                kw["image"] = icon
+                kw["compound"] = "top"
+            btn = ctk.CTkButton(cell, **kw)
+            btn.pack(fill="both", expand=True)
+            tip(btn, f"Switch to {lab}")
+            self._intent_btns[key] = btn
+        # Keep legacy segmented control in sync if present (hidden)
+        if hasattr(self, "intent_seg"):
+            try:
+                self.intent_seg.set(INTENT_LABELS.get(active, "LFG"))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Per-game vocabulary normalizer (DG=Dungeon, WB=World Boss, …)
@@ -3191,15 +3238,15 @@ class GamersChatHelper:
         self.main_body = ctk.CTkFrame(self.root, fg_color="transparent")
         self.main_body.pack(fill="both", expand=True, padx=pad(14), pady=(pad(6), 0))
 
-        # Top-level app tabs — dark rail + elevated selected (not purple chips like INTENT)
+        # Top-level app tabs — selected = emerald (clear active state)
         self.tabview = ctk.CTkTabview(
             self.main_body,
             fg_color=C["surface"],
             segmented_button_fg_color=C["bg"],
-            segmented_button_selected_color=C["elevated"],
-            segmented_button_selected_hover_color=C["hover"],
-            segmented_button_unselected_color=C["bg"],
-            segmented_button_unselected_hover_color=C["elevated"],
+            segmented_button_selected_color=C.get("primary", "#10B981"),
+            segmented_button_selected_hover_color=C.get("primary_h", "#059669"),
+            segmented_button_unselected_color=C["elevated"],
+            segmented_button_unselected_hover_color=C["hover"],
             text_color=C["text"],
             corner_radius=14,
             border_width=1,
@@ -3207,14 +3254,13 @@ class GamersChatHelper:
         )
         self.tabview.pack(fill="both", expand=True)
         try:
-            # Taller + bold: primary navigation (distinct from LFG/Recruit intent row)
             self.tabview._segmented_button.configure(
                 font=f_ui(13, "bold"),
-                height=sz(38),
-                selected_color=C["elevated"],
-                selected_hover_color=C["hover"],
-                unselected_color=C["bg"],
-                unselected_hover_color=C["elevated"],
+                height=sz(40),
+                selected_color=C.get("primary", "#10B981"),
+                selected_hover_color=C.get("primary_h", "#059669"),
+                unselected_color=C["elevated"],
+                unselected_hover_color=C["hover"],
                 text_color=C["text"],
                 text_color_disabled=C["muted"],
             )
@@ -3723,7 +3769,7 @@ class GamersChatHelper:
             row1, text=APP_NAME.upper(), font=f_ui(16, "bold"), text_color=C["text"],
         ).pack(side="left")
 
-        icon_s = sz(26)
+        icon_s = sz(36)
         self.game_icon_label = ctk.CTkLabel(row1, text="", width=icon_s, height=icon_s)
         self.game_icon_label.pack(side="left", padx=(pad(10), pad(4)))
 
@@ -3864,7 +3910,38 @@ class GamersChatHelper:
             ctk.CTkLabel(
                 inner, text=desc, font=f_ui(12, "bold"), text_color=C["text"],
             ).pack(side="left")
-        tip(hk, "Global hotkeys when Keys is on (⋯ menu).\nF6 = Write current intent · F7 = Copy Your Line.")
+        tip(
+            hk,
+            "Global hotkeys when Keys is on (⋯ menu).\n"
+            "F6 = Write current intent · F7 = Copy Your Line\n"
+            "F8 = Economy Snap + price · F9 = Re-price last market shot\n"
+            "F10 = Oracle · F1 = Help",
+        )
+        # Extra F8/F9 chips for discoverability (critique: tooltips on game hotkeys)
+        for key_label, desc, cmd in (
+            ("F8", "Snap", lambda e: self.hotkey_market_snap() if hasattr(self, "hotkey_market_snap") else None),
+            ("F9", "Reprice", lambda e: self.hotkey_reprice() if hasattr(self, "hotkey_reprice") else None),
+        ):
+            chip = ctk.CTkFrame(
+                hk, fg_color=C["elevated"], corner_radius=8,
+                border_width=1, border_color=C["line"],
+                height=max(32, sz(32)),
+            )
+            chip.pack(side="left", padx=(0, pad(8)))
+            chip.pack_propagate(False)
+            inner = ctk.CTkFrame(chip, fg_color="transparent")
+            inner.pack(padx=pad(10), pady=pad(6))
+            self._kbd_badge(inner, key_label).pack(side="left", padx=(0, pad(6)))
+            ctk.CTkLabel(
+                inner, text=desc, font=f_ui(12, "bold"), text_color=C["text"],
+            ).pack(side="left")
+            chip.bind("<Button-1>", cmd)
+            for child in (inner,):
+                try:
+                    child.bind("<Button-1>", cmd)
+                except Exception:
+                    pass
+        tip(hk, "F6 Write · F7 Copy · F8 Market snap · F9 Re-price · Keys must be on.")
 
     def _open_header_overflow(self):
         """Native menu for power controls — keeps the daily header calm."""
@@ -4184,43 +4261,40 @@ class GamersChatHelper:
             command=self.dismiss_onboarding,
         ).pack(fill="x", padx=pad(14), pady=(pad(4), pad(12)))
 
-        # ---- Intent chips (job picker — visually distinct from top app tabs) ----
+        # Optional HUD banner art (assets/banner.png)
+        if getattr(self, "show_banner", True):
+            try:
+                ban = self.assets.banner(size=(max(640, sz(720)), max(64, sz(72))))
+                if ban is not None:
+                    self._banner_img = ban
+                    ban_fr = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+                    ban_fr.pack(fill="x", padx=pad(10), pady=(pad(8) if self.onboarding_done else pad(4), pad(4)))
+                    ctk.CTkLabel(ban_fr, text="", image=ban).pack(fill="x", padx=pad(6), pady=pad(6))
+            except Exception:
+                pass
+
+        # ---- Intent picker: LARGE icon+label buttons (visible graphics) ----
         intent_card = ctk.CTkFrame(
             tab, fg_color=C["elevated"], corner_radius=12,
-            border_width=1, border_color=C["accent"],
+            border_width=1, border_color=C.get("primary", C["accent"]),
         )
-        intent_card.pack(fill="x", padx=pad(10), pady=(pad(10) if self.onboarding_done else 0, pad(6)))
+        intent_card.pack(fill="x", padx=pad(10), pady=(pad(6) if self.onboarding_done else pad(4), pad(6)))
         self.intent_card = intent_card
         intent_head = ctk.CTkFrame(intent_card, fg_color="transparent")
         intent_head.pack(fill="x", padx=pad(14), pady=(pad(10), pad(4)))
         ctk.CTkLabel(
-            intent_head, text="INTENT", font=f_ui(11, "bold"),
-            text_color=C["accent"],
+            intent_head, text="INTENT", font=f_ui(12, "bold"),
+            text_color=C.get("primary", C["accent"]),
         ).pack(side="left")
         ctk.CTkLabel(
-            intent_head, text="what do you want to say?", font=f_ui(12),
-            text_color=C["muted"],
+            intent_head, text="tap an icon · what do you want to say?",
+            font=f_ui(12), text_color=C["muted"],
         ).pack(side="left", padx=(pad(8), 0))
-        # Shared fantasy icons (same set every game — Library-style consistency)
-        self.intent_icon_host = ctk.CTkFrame(intent_head, fg_color="transparent")
-        self.intent_icon_host.pack(side="right")
-        chip_row = ctk.CTkFrame(intent_card, fg_color="transparent")
-        chip_row.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
-        # Filled accent chips on elevated card — not the same style as top tab rail
-        self.intent_seg = ctk.CTkSegmentedButton(
-            chip_row,
-            values=[INTENT_LABELS[k] for k in INTENT_OPTIONS],
-            font=f_ui(13, "bold"),
-            height=sz(38),
-            selected_color=C["accent"],
-            selected_hover_color=C["accent_h"],
-            unselected_color=C["surface"],
-            unselected_hover_color=C["hover"],
-            text_color=C["text"],
-            command=self.on_intent_label,
-        )
-        self.intent_seg.set(INTENT_LABELS.get(self.generator_intent.get(), "LFG"))
-        self.intent_seg.pack(fill="x")
+        # Large icon buttons (not a tiny row of 20px images)
+        self.intent_btn_host = ctk.CTkFrame(intent_card, fg_color="transparent")
+        self.intent_btn_host.pack(fill="x", padx=pad(10), pady=(0, pad(12)))
+        # Hidden legacy control for any code that still references intent_seg
+        self.intent_seg = None
         self._refresh_intent_icons()
 
         # SEED DIRECTIVE — demoted band (not equal weight to Your Line)
@@ -4610,11 +4684,16 @@ class GamersChatHelper:
         except Exception:
             pass
         self.generator_intent.set(key)
-        if hasattr(self, "intent_seg"):
+        if getattr(self, "intent_seg", None) is not None:
             try:
                 self.intent_seg.set(INTENT_LABELS[key])
             except Exception:
                 pass
+        # Refresh large icon buttons to show selection
+        try:
+            self._refresh_intent_icons()
+        except Exception:
+            pass
         self._show_intent_panel(key)
         # Entering Recruit: load selected pitch only if Your Line is empty
         # (don't wipe an unsaved AI draft when switching intents)
@@ -5885,7 +5964,7 @@ class GamersChatHelper:
             return
         key, label, mode, mins, note = preset
         # Pull minutes from form if generic/custom
-        if key in ("generic", "custom_once", "wife_aggro", "boss", "bedtime", "world_boss"):
+        if key in ("generic", "custom_once", "irl_checkin", "wife_aggro", "boss", "bedtime", "world_boss"):
             try:
                 form_mins = float((self.time_alarm_mins_var.get() or "").strip() or mins)
                 if form_mins > 0:
@@ -6086,11 +6165,12 @@ class GamersChatHelper:
         )
         self.calc_keys_hint.pack(fill="x", padx=pad(16), pady=(0, pad(6)))
 
+        # Large readout, compact pad (critique: Fitts proportions)
         self.calc_display = ctk.CTkEntry(
-            wrap, height=sz(52), font=f_mono(22), justify="right",
-            fg_color=C["surface"], border_color=C["line"], text_color=C["text"],
+            wrap, height=sz(72), font=f_mono(32, "bold"), justify="right",
+            fg_color="#0C0C0E", border_color=C["line"], text_color="#FAFAFA",
         )
-        self.calc_display.pack(fill="x", padx=pad(16), pady=(0, pad(12)))
+        self.calc_display.pack(fill="x", padx=pad(16), pady=(0, pad(10)))
         self.calc_display.insert(0, "0")
         tip(
             self.calc_display,
@@ -6099,11 +6179,9 @@ class GamersChatHelper:
         )
 
         grid = ctk.CTkFrame(wrap, fg_color="transparent")
-        grid.pack(fill="both", expand=True, padx=pad(12), pady=(0, pad(16)))
+        grid.pack(fill="x", padx=pad(16), pady=(0, pad(16)))
         for i in range(4):
             grid.grid_columnconfigure(i, weight=1, uniform="calc")
-        for r in range(5):
-            grid.grid_rowconfigure(r, weight=1)
 
         rows = [
             [("C", "fn"), ("⌫", "fn"), ("%", "op"), ("÷", "op")],
@@ -6125,12 +6203,12 @@ class GamersChatHelper:
                 else:
                     fg, hov, tc = C["surface"], C["hover"], C["text"]
                 btn = ctk.CTkButton(
-                    grid, text=label, font=f_ui(18, "bold"), height=sz(52),
+                    grid, text=label, font=f_ui(16, "bold"), height=sz(42),
                     fg_color=fg, hover_color=hov, text_color=tc,
                     border_width=0 if kind == "eq" else 1, border_color=C["line"],
                     command=lambda L=label: self._calc_press(L),
                 )
-                btn.grid(row=r, column=c, sticky="nsew", padx=pad(4), pady=pad(4))
+                btn.grid(row=r, column=c, sticky="ew", padx=pad(3), pady=pad(3))
 
         # Bind once per app lifetime (UI rebuilds must not stack handlers)
         if not getattr(self, "_calc_key_bound", False):
@@ -8742,13 +8820,16 @@ class GamersChatHelper:
     def _refresh_game_icon(self):
         if not hasattr(self, "game_icon_label"):
             return
-        bs = sz(26)
+        bs = sz(36)
         badge = self.assets.game_badge(self.game_var.get(), size=(bs, bs))
         if badge:
             self._game_badge_img = badge
-            self.game_icon_label.configure(image=badge, text="")
+            self.game_icon_label.configure(image=badge, text="", width=bs, height=bs)
         else:
-            self.game_icon_label.configure(image=None, text="◆", font=f_ui(12), text_color=self.accent())
+            self.game_icon_label.configure(
+                image=None, text="◆", font=f_ui(16, "bold"), text_color=self.accent(),
+                width=bs, height=bs,
+            )
 
     def on_game_changed(self, game: str = None, persist: bool = True):
         """
