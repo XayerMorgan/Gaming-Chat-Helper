@@ -1,72 +1,44 @@
 # Hyperline AI — Help Manual
 
-**Version:** 7.0  
-**App:** Hyperline — Instant Global Chat Velocity. Local desktop companion for MMO chat lines, Steam population, market snaps, and a simple calculator.
+**Version 7.0** · Instant Global Chat Velocity
 
-**Your Line telemetry** (engagement / readability) is a local heuristic estimate, not live game CTR.
-
-This manual is available from the app menu: **Help → Full Manual** (also **F1** for context help on the current tab).
-
-**Install, LM Studio, vision models, and PC tuning:** see **[SETUP_AND_FAQ.md](SETUP_AND_FAQ.md)**  
-(also **Help → Setup & FAQ (LM Studio)** in the app).
+Local companion for MMO chat, Steam population, market snaps, timers, and a calculator.
 
 ---
 
-## 0. Requirements at a glance
-
-| Need | Details |
-|------|---------|
-| Python 3.10+ | `pip install -r requirements.txt` |
-| LM Studio | https://lmstudio.ai/ — model loaded + **Local Server** on port **1234** |
-| Recommended model | **Qwen3-VL 2B Instruct Q4** (chat + Economy + OCR on modest VRAM) |
-| Stronger vision | Qwen2-VL / Qwen3-VL 7B–8B Q4 |
-| Optional OCR | [Tesseract for Windows](https://github.com/UB-Mannheim/tesseract/wiki) + `pytesseract` |
-| API URL | `http://127.0.0.1:1234` (prefer IPv4, not `localhost`) |
-
-Full install steps, VRAM guide, and FAQ → **SETUP_AND_FAQ.md**.
-
----
-
-## 1. Quick start (Golden Loop)
+## Quick start
 
 1. Pick a **game** in the header (sets character limit and profile).
 2. Open **Chat Generator**.
-3. Choose an intent: **LFG · Activity · Reply · Recruit · Noise**.
-4. Press **Write** (or **F6** if hotkeys are on).
+3. Tap an **intent icon**: LFG · Activity · Reply · Recruit · Noise.
+4. Press **Write** (or **F6** if Keys is on).
 5. Press green **Copy** (or **F7**) and paste in-game.
 
-Requirements for AI writing:
+### For AI writing you need
 
-- [LM Studio](https://lmstudio.ai/) running  
-- A model loaded  
-- **Local Server** enabled (default `http://127.0.0.1:1234`)  
+- LM Studio running with a model loaded
+- Local Server on `http://127.0.0.1:1234`
 - Header shows **AI · on** (green)
 
-If AI is off, many jobs still work via **offline packs** (stock LFG, noise, dad jokes, activity lines).
+If AI is off, offline packs still cover many LFG / noise / activity lines.
+
+**Install & LM Studio tuning:** open **SETUP_AND_FAQ.md** from Help menu.
 
 ---
 
-## 2. Header controls
+## Header controls
 
 | Control | Meaning |
 |--------|---------|
-| **Game dropdown** | Profile: char limit, LFG content, stock lines, Steam AppID |
+| **Game** | Profile: limit, LFG content, stock lines, Steam AppID |
 | **Limit badge** | Hard character cap (Copy blocks if over) |
-| **A− / A+** | UI text size (also Ctrl+ / Ctrl− / Ctrl+0) |
-| **Players · …** | Steam **concurrent players** for this game (not AI). Click → Setup chart |
-| **AI · on/off** | LM Studio local server reachable? Hover for model name |
-| **ready / thinking** | Clipboard / generate status |
-| **HUD** | Compact always-on-top strip |
-| **Pin** | Keep window above the game |
-| **Auto** | Auto-copy when generation finishes |
-| **Focus** | Pin + auto-copy + quieter “raid night” status |
-| **Keys** | Enable app hotkeys (F6–F10) |
-| **↻ Restart** | Save settings and relaunch the `.bat` |
-| **✦ Oracle** | Daily vibe + Steam advice + random LFG location |
-| **⇪ Export** | Write `session_export.txt` (or **Ctrl+E**) |
+| **Players** | Steam concurrent players — click for Setup chart |
+| **AI · on/off** | LM Studio server status |
+| **Timer chip** | Next alarm — click opens **Time** tab |
+| **F6 / F7 / F8 / F9** | Write · Copy · Market snap · Re-price |
+| **⋯ menu** | Type size, HUD, Pin, Auto, Focus, Keys, Oracle, Export, Restart |
 
-**Hover** almost any control for a short tooltip.  
-Status line (footer) rotates tips; session chip counts copies / gens / streak.
+Hover almost any control for a short tooltip.
 
 ---
 

@@ -3349,20 +3349,208 @@ class GamersChatHelper:
         )
 
     def _help_lock_textbox(self, tb) -> None:
-        """Keep help readable: don't use disabled (CTK greys text to unreadable)."""
+        """Read-only help: block edits without greying text (no state=disabled)."""
         if tb is None:
             return
         try:
             tb.configure(state="normal")
             tb.bind("<Key>", lambda e: "break")
             tb.bind("<<Paste>>", lambda e: "break")
+            tb.bind("<Control-v>", lambda e: "break")
             tb.bind("<Button-1>", lambda e: tb.focus_set())
         except Exception:
             pass
 
+    def _help_configure_md_tags(self, tw: tk.Text) -> None:
+        """Typography tags for rendered Markdown in the help viewer."""
+        ui = FONT_UI
+        mono = FONT_MONO
+        base = max(13, int(round(14 * _TYPE["font"])))
+        tw.configure(
+            bg="#0C0C0E",
+            fg="#F4F4F5",
+            insertbackground="#F4F4F5",
+            selectbackground=C.get("primary", "#10B981"),
+            selectforeground="#04120a",
+            font=(ui, base),
+            wrap="word",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=16,
+            pady=14,
+            spacing1=2,
+            spacing3=4,
+        )
+        tw.tag_configure(
+            "h1", font=(ui, base + 8, "bold"), foreground="#FAFAFA",
+            spacing1=16, spacing3=10,
+        )
+        tw.tag_configure(
+            "h2", font=(ui, base + 4, "bold"), foreground=C.get("primary", "#10B981"),
+            spacing1=14, spacing3=6,
+        )
+        tw.tag_configure(
+            "h3", font=(ui, base + 2, "bold"), foreground="#E4E4E7",
+            spacing1=10, spacing3=4,
+        )
+        tw.tag_configure("bold", font=(ui, base, "bold"), foreground="#FAFAFA")
+        tw.tag_configure("italic", font=(ui, base, "italic"), foreground="#E4E4E7")
+        tw.tag_configure(
+            "code", font=(mono, max(11, base - 1)), foreground="#A7F3D0",
+            background="#141416",
+        )
+        tw.tag_configure(
+            "codeblock", font=(mono, max(11, base - 1)), foreground="#D1FAE5",
+            background="#121214", lmargin1=12, lmargin2=12, spacing1=4, spacing3=4,
+        )
+        tw.tag_configure("bullet", foreground="#F4F4F5", lmargin1=12, lmargin2=28)
+        tw.tag_configure(
+            "table", font=(mono, max(11, base - 1)), foreground="#E4E4E7",
+            background="#121214", lmargin1=4, lmargin2=4,
+        )
+        tw.tag_configure("hr", foreground="#3F3F46", spacing1=8, spacing3=8)
+        tw.tag_configure("link", foreground="#60A5FA", underline=True)
+        tw.tag_configure(
+            "search",
+            background=C.get("primary", "#10B981"),
+            foreground="#04120a",
+        )
+        tw.tag_configure("para", foreground="#F4F4F5", spacing3=6)
+
+    def _help_insert_inline(self, tw: tk.Text, text: str, base_tags: tuple = ()) -> None:
+        """Insert a line with **bold**, *italic*, `code`, [links](url)."""
+        # Links first → show label only
+        text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+        # Split on code / bold / italic (order: code, bold, italic)
+        pattern = re.compile(
+            r"(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)"
+        )
+        pos = 0
+        for m in pattern.finditer(text):
+            if m.start() > pos:
+                tw.insert("end", text[pos:m.start()], base_tags)
+            token = m.group(0)
+            if token.startswith("`") and token.endswith("`"):
+                tw.insert("end", token[1:-1], base_tags + ("code",))
+            elif token.startswith("**") and token.endswith("**"):
+                tw.insert("end", token[2:-2], base_tags + ("bold",))
+            elif token.startswith("__") and token.endswith("__"):
+                tw.insert("end", token[2:-2], base_tags + ("bold",))
+            elif token.startswith("*") and token.endswith("*"):
+                tw.insert("end", token[1:-1], base_tags + ("italic",))
+            elif token.startswith("_") and token.endswith("_"):
+                tw.insert("end", token[1:-1], base_tags + ("italic",))
+            else:
+                tw.insert("end", token, base_tags)
+            pos = m.end()
+        if pos < len(text):
+            tw.insert("end", text[pos:], base_tags)
+
+    def _render_markdown_to_tk(self, tw: tk.Text, md: str) -> None:
+        """Render Markdown into a tk.Text widget with styled tags (no raw # **)."""
+        tw.configure(state="normal")
+        tw.delete("1.0", "end")
+        self._help_configure_md_tags(tw)
+        lines = (md or "").replace("\r\n", "\n").split("\n")
+        i = 0
+        in_code = False
+        code_buf: list[str] = []
+        while i < len(lines):
+            line = lines[i]
+            # Fenced code
+            if line.strip().startswith("```"):
+                if in_code:
+                    block = "\n".join(code_buf) + "\n"
+                    tw.insert("end", block, ("codeblock",))
+                    code_buf = []
+                    in_code = False
+                else:
+                    in_code = True
+                    code_buf = []
+                i += 1
+                continue
+            if in_code:
+                code_buf.append(line)
+                i += 1
+                continue
+
+            # Horizontal rule
+            if re.match(r"^\s*(-{3,}|\*{3,}|_{3,})\s*$", line):
+                tw.insert("end", "─" * 48 + "\n", ("hr",))
+                i += 1
+                continue
+
+            # Table block
+            if "|" in line and line.strip().startswith("|"):
+                table_rows = []
+                while i < len(lines) and "|" in lines[i]:
+                    raw = lines[i].strip()
+                    # skip separator |---|---|
+                    if re.match(r"^\|?[\s\-:|]+\|?$", raw):
+                        i += 1
+                        continue
+                    cells = [c.strip() for c in raw.strip("|").split("|")]
+                    table_rows.append(cells)
+                    i += 1
+                if table_rows:
+                    widths = [0] * max(len(r) for r in table_rows)
+                    for r in table_rows:
+                        for ci, cell in enumerate(r):
+                            # strip md bold for width
+                            plain = re.sub(r"[*_`]", "", cell)
+                            widths[ci] = max(widths[ci], min(28, len(plain)))
+                    for ri, r in enumerate(table_rows):
+                        parts = []
+                        for ci, cell in enumerate(r):
+                            plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", cell)
+                            plain = re.sub(r"`([^`]+)`", r"\1", plain)
+                            w = widths[ci] if ci < len(widths) else 12
+                            parts.append(plain.ljust(w)[:w])
+                        row_txt = "  " + " · ".join(parts) + "\n"
+                        tags = ("table", "bold") if ri == 0 else ("table",)
+                        tw.insert("end", row_txt, tags)
+                    tw.insert("end", "\n")
+                continue
+
+            # Headings
+            hm = re.match(r"^(#{1,3})\s+(.*)$", line)
+            if hm:
+                level = len(hm.group(1))
+                title = hm.group(2).strip()
+                tag = {1: "h1", 2: "h2", 3: "h3"}[level]
+                tw.insert("end", title + "\n", (tag,))
+                i += 1
+                continue
+
+            # Bullets
+            bm = re.match(r"^\s*([-*+]|\d+\.)\s+(.*)$", line)
+            if bm:
+                body = bm.group(2)
+                tw.insert("end", "  •  ", ("bullet",))
+                self._help_insert_inline(tw, body, ("bullet",))
+                tw.insert("end", "\n")
+                i += 1
+                continue
+
+            # Empty
+            if not line.strip():
+                tw.insert("end", "\n")
+                i += 1
+                continue
+
+            # Paragraph
+            self._help_insert_inline(tw, line, ("para",))
+            tw.insert("end", "\n")
+            i += 1
+
+        if in_code and code_buf:
+            tw.insert("end", "\n".join(code_buf) + "\n", ("codeblock",))
+        tw.see("1.0")
+        self._help_lock_textbox(tw)
+
     def open_help_manual(self):
-        """Scrollable full manual window (primary help surface)."""
-        # Reuse existing window if open
+        """Scrollable full manual with Markdown rendering."""
         existing = getattr(self, "_help_win", None)
         if existing is not None:
             try:
@@ -3375,8 +3563,8 @@ class GamersChatHelper:
 
         win = ctk.CTkToplevel(self.root)
         win.title(f"Help Manual  ·  {APP_NAME} v{APP_VERSION}")
-        win.geometry("780x680")
-        win.minsize(520, 420)
+        win.geometry("820x700")
+        win.minsize(560, 440)
         win.configure(fg_color=C["bg"])
         try:
             win.attributes("-topmost", True)
@@ -3394,7 +3582,7 @@ class GamersChatHelper:
             top, text="HELP MANUAL", font=f_ui(16, "bold"), text_color="#FAFAFA",
         ).pack(side="left", padx=pad(14), pady=pad(12))
         ctk.CTkLabel(
-            top, text="Search · jump · F1 = this tab only",
+            top, text="Rendered Markdown · Search · F1 = this tab",
             font=f_ui(12), text_color="#D4D4D8",
         ).pack(side="left", padx=(0, pad(8)))
 
@@ -3406,7 +3594,6 @@ class GamersChatHelper:
         )
         search_e.pack(side="right", padx=pad(14), pady=pad(10))
 
-        # Jump chips — larger, high contrast
         jumps = ctk.CTkFrame(win, fg_color="transparent")
         jumps.pack(fill="x", padx=pad(12), pady=(0, pad(4)))
         for name in (
@@ -3426,26 +3613,24 @@ class GamersChatHelper:
             border_width=1, border_color=C["line"],
         )
         body.pack(fill="both", expand=True, padx=pad(12), pady=(pad(4), pad(12)))
-        # Near-black canvas + near-white text — max readability
-        self._help_textbox = ctk.CTkTextbox(
-            body,
-            font=f_ui(15),
-            fg_color="#0C0C0E",
-            text_color="#F4F4F5",
-            wrap="word",
-            border_width=1,
-            border_color=C["line"],
-            corner_radius=10,
+
+        # Native tk.Text for real Markdown tags (CTkTextbox greys disabled text)
+        wrap = tk.Frame(body, bg="#0C0C0E", highlightthickness=0)
+        wrap.pack(fill="both", expand=True, padx=pad(8), pady=pad(8))
+        scroll = tk.Scrollbar(wrap, orient="vertical")
+        scroll.pack(side="right", fill="y")
+        self._help_textbox = tk.Text(
+            wrap, yscrollcommand=scroll.set, undo=False,
         )
-        self._help_textbox.pack(fill="both", expand=True, padx=pad(10), pady=pad(10))
+        self._help_textbox.pack(side="left", fill="both", expand=True)
+        scroll.config(command=self._help_textbox.yview)
+
         manual = self._load_help_manual_text()
         self._help_manual_cache = manual
-        self._help_textbox.insert("1.0", manual)
-        self._help_lock_textbox(self._help_textbox)
+        self._render_markdown_to_tk(self._help_textbox, manual)
 
         def do_search(*_a):
-            q = search_var.get().strip()
-            self._help_find(q)
+            self._help_find(search_var.get().strip())
 
         search_e.bind("<Return>", do_search)
         ctk.CTkButton(
@@ -3502,12 +3687,6 @@ class GamersChatHelper:
                 if first is None:
                     first = pos
                 start = end
-            # High-contrast highlight (not low-contrast grey)
-            tb.tag_config(
-                "search",
-                background=C.get("primary", "#10B981"),
-                foreground="#04120a",
-            )
             if first:
                 tb.see(first)
             self._help_lock_textbox(tb)
@@ -3522,7 +3701,6 @@ class GamersChatHelper:
         tb = getattr(self, "_help_textbox", None)
         if tb is None:
             return
-        # Map friendly names to search strings in HELP_MANUAL.md
         mapping = {
             "Quick start": "Quick start",
             "Header": "Header controls",
@@ -3569,11 +3747,11 @@ class GamersChatHelper:
         self._show_help_dialog(f"About {APP_NAME}", about)
 
     def _show_help_dialog(self, title: str, body: str):
-        """F1 / shortcuts / about — high-contrast readable panel."""
+        """F1 / shortcuts / about — Markdown-rendered high-contrast panel."""
         win = ctk.CTkToplevel(self.root)
         win.title(title)
-        win.geometry("560x480")
-        win.minsize(420, 320)
+        win.geometry("580x500")
+        win.minsize(440, 340)
         win.configure(fg_color=C["bg"])
         try:
             win.attributes("-topmost", True)
@@ -3583,19 +3761,16 @@ class GamersChatHelper:
         ctk.CTkLabel(
             win, text=title, font=f_ui(16, "bold"), text_color="#FAFAFA",
         ).pack(anchor="w", padx=pad(16), pady=(pad(14), pad(8)))
-        box = ctk.CTkTextbox(
-            win,
-            font=f_ui(15),
-            fg_color="#0C0C0E",
-            text_color="#F4F4F5",
-            wrap="word",
-            border_width=1,
-            border_color=C["line"],
-            corner_radius=10,
-        )
-        box.pack(fill="both", expand=True, padx=pad(14), pady=(0, pad(8)))
-        box.insert("1.0", body)
-        self._help_lock_textbox(box)
+        wrap = tk.Frame(win, bg="#0C0C0E", highlightthickness=1, highlightbackground=C["line"])
+        wrap.pack(fill="both", expand=True, padx=pad(14), pady=(0, pad(8)))
+        scroll = tk.Scrollbar(wrap, orient="vertical")
+        scroll.pack(side="right", fill="y")
+        box = tk.Text(wrap, yscrollcommand=scroll.set, undo=False)
+        box.pack(side="left", fill="both", expand=True)
+        scroll.config(command=box.yview)
+        # Treat plain help blurb as Markdown (bold/bullets work)
+        md = body if body.lstrip().startswith("#") else f"## {title}\n\n{body}"
+        self._render_markdown_to_tk(box, md)
         row = ctk.CTkFrame(win, fg_color="transparent")
         row.pack(fill="x", padx=pad(14), pady=(0, pad(14)))
         ctk.CTkButton(
