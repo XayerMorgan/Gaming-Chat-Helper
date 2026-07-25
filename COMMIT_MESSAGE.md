@@ -28,6 +28,6 @@ Ships Gamer’s Chat Helper as a full local companion: intent-driven chat genera
 ## How to run
 1. Install deps from `requirements.txt`
 2. Start LM Studio + local server (optional for offline packs)
-3. Double-click `Start Gamers Chat Helper.bat`
+3. Double-click `Start Hyperline.bat`
 4. Help → Full Manual for the full walkthrough
 ```

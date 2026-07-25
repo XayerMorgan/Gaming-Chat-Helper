@@ -1,8 +1,8 @@
-# Gamer’s Chat Helper — Feature Document
+# Hyperline AI — Feature Document
 
-**Product:** Local desktop companion for MMO chat drafting, Steam population trends, market screenshot pricing, calculator, and session tools.  
+**Product:** Hyperline — Instant Global Chat Velocity. Local desktop companion for MMO chat drafting, Steam population trends, market screenshot pricing, calculator, and session tools.  
 **Stack:** Python · CustomTkinter · LM Studio (OpenAI-compatible API) · optional Tesseract · Steam public player count API  
-**Current version:** 6.2  
+**Current version:** 7.0  
 
 ---
 
@@ -71,7 +71,7 @@
 | Path | Role |
 |------|------|
 | `gamers_chat_helper.py` | Main application |
-| `Start Gamers Chat Helper.bat` | Windows launcher |
+| `Start Hyperline.bat` | Windows launcher |
 | `chat_helper_config.json` | User settings |
 | `HELP_MANUAL.md` | End-user manual |
 | `FEATURES.md` | This document |
@@ -102,7 +102,7 @@ feat: Economy snaps, help system, and raid-night companion suite (v6.2)
 
 ```markdown
 ## Summary
-Ships Gamer’s Chat Helper as a full local companion: intent-driven chat generation with offline packs, Steam population trends (time-axis chart + peak/min), market screenshot pricing via LM Studio vision, simple calculator with keyboard mode, and a comprehensive Help menu + manual.
+Ships Hyperline AI as a full local companion: intent-driven chat generation with offline packs, Steam population trends (time-axis chart + peak/min), market screenshot pricing via LM Studio vision, simple calculator with keyboard mode, and a comprehensive Help menu + manual.
 
 ## Highlights
 - **Chat Generator** — LFG/Activity/Reply/Recruit/Noise, house style, OCR grab, sticky Copy
@@ -120,7 +120,7 @@ Ships Gamer’s Chat Helper as a full local companion: intent-driven chat genera
 ## How to run
 1. Install deps from `requirements.txt`
 2. Start LM Studio + local server (optional for offline packs)
-3. Double-click `Start Gamers Chat Helper.bat`
+3. Double-click `Start Hyperline.bat`
 4. Help → Full Manual for the full walkthrough
 ```
 

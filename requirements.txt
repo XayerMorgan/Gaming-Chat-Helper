@@ -1,4 +1,4 @@
-# Gamer's Chat Helper — Python dependencies
+# Hyperline AI — Python dependencies
 # Install:  python -m pip install -r requirements.txt
 # Full setup (LM Studio, vision models, tuning): see SETUP_AND_FAQ.md
 

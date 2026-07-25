@@ -1,7 +1,9 @@
-# Gamer’s Chat Helper — Help Manual
+# Hyperline AI — Help Manual
 
-**Version:** 6.3  
-**App:** Local desktop companion for MMO chat lines, Steam population, market snaps, and a simple calculator.
+**Version:** 7.0  
+**App:** Hyperline — Instant Global Chat Velocity. Local desktop companion for MMO chat lines, Steam population, market snaps, and a simple calculator.
+
+**Your Line telemetry** (engagement / readability) is a local heuristic estimate, not live game CTR.
 
 This manual is available from the app menu: **Help → Full Manual** (also **F1** for context help on the current tab).
 
@@ -208,7 +210,7 @@ Calculator Keys mode is separate (on the Calculator tab).
 | `SETUP_AND_FAQ.md` | Install, LM Studio, models, tuning, FAQ |
 | `FEATURES.md` | Feature overview / release notes |
 | `requirements.txt` | Python packages |
-| `Start Gamers Chat Helper.bat` | Launcher |
+| `Start Hyperline.bat` | Launcher |
 
 ---
 
@@ -255,4 +257,4 @@ Calculator Keys mode is separate (on the Calculator tab).
 
 ---
 
-*Gamer’s Chat Helper — local companion, not affiliated with game publishers or LM Studio.*
+*Hyperline AI — local companion, not affiliated with game publishers or LM Studio.*

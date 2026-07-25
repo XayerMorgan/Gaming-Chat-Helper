@@ -1,8 +1,10 @@
-# Gamer’s Chat Helper
+# Hyperline AI
 
-Local desktop companion for MMO chat drafting, Steam concurrent-player trends, market screenshot pricing, and raid-night utilities.
+**Instant Global Chat Velocity.** Local desktop companion for MMO chat drafting, Steam concurrent-player trends, market screenshot pricing, and raid-night utilities.
 
 **Right line · under the character limit · paste in game** — powered by optional [LM Studio](https://lmstudio.ai/) (local OpenAI-compatible API). No cloud AI key required.
+
+> Formerly *Gamer’s Chat Helper* — same app, sharper brand.
 
 | | |
 |---|---|
@@ -59,7 +61,7 @@ python -m pip install -r requirements.txt
 ### Launch
 
 ```bat
-Start Gamers Chat Helper.bat
+Start Hyperline.bat
 ```
 
 Or:
@@ -89,7 +91,7 @@ On first run the app writes `chat_helper_config.json` next to the script.
 ```text
 .
 ├── gamers_chat_helper.py      # Main application
-├── Start Gamers Chat Helper.bat
+├── Start Hyperline.bat
 ├── requirements.txt
 ├── README.md                  # This file
 ├── SETUP_AND_FAQ.md           # Install, LM Studio, models, FAQ

@@ -1,5 +1,6 @@
 @echo off
 cd /d "%~dp0"
+title Hyperline AI
 
 REM Prefer pythonw for the GUI (no console pipe — avoids 0x800700E8 / ERROR_NO_DATA)
 where pythonw >nul 2>&1
@@ -12,6 +13,6 @@ REM Fallback: console python (shows errors if import fails)
 python "%~dp0gamers_chat_helper.py" %*
 if errorlevel 1 (
     echo.
-    echo App exited with an error.
+    echo Hyperline exited with an error.
     pause
 )

@@ -1,6 +1,6 @@
-# Gamer’s Chat Helper — Setup & FAQ
+# Hyperline AI — Setup & FAQ
 
-**Version:** 6.3  
+**Version:** 7.0  
 **For:** first-time install, LM Studio, vision models, and tuning your PC  
 
 Also in the app: **Help → Setup & FAQ (LM Studio)** · **Help → Full Manual** · **F1** (current tab).
@@ -51,7 +51,7 @@ python -m pip install -r requirements.txt
 Double-click:
 
 ```text
-Start Gamers Chat Helper.bat
+Start Hyperline.bat
 ```
 
 Or:
@@ -87,7 +87,7 @@ Config is created next to the app as `chat_helper_config.json`.
 4. Keep **OpenAI-compatible** API enabled.  
 5. Leave context length reasonable (e.g. 4k–8k for small models).  
 
-Chat Helper expects:
+Hyperline expects:
 
 ```text
 http://127.0.0.1:1234/v1/chat/completions
@@ -98,7 +98,7 @@ The app prefers **`127.0.0.1`**, not `localhost`, because Windows often tries IP
 
 ### 3.4 Confirm the app sees AI
 
-1. Launch Chat Helper.  
+1. Launch Hyperline.  
 2. Header should show **AI · on** (green) within a few seconds.  
 3. Hover **AI · on** — tooltip may show the loaded model id.  
 4. If **AI · off**: see [§7 Troubleshooting](#7-troubleshooting).
@@ -147,7 +147,7 @@ Always prefer **GGUF / quant** builds (Q4_K_M, Q5_K_M) over full precision on co
 
 1. In LM Studio, unload old model → load new one.  
 2. Keep **Local Server** running.  
-3. In Chat Helper, wait for **AI · on** (or Restart app).  
+3. In Hyperline, wait for **AI · on** (or Restart app).  
 4. No need to change code if the server stays on port **1234**.
 
 ---
@@ -175,7 +175,7 @@ Always prefer **GGUF / quant** builds (Q4_K_M, Q5_K_M) over full precision on co
 
 If the model thrashing/disk-swaps: lower context, use a smaller quant, or fewer GPU layers.
 
-### 5.3 Chat Helper side (no LM Studio knobs needed)
+### 5.3 Hyperline side (no LM Studio knobs needed)
 
 | Area | How to tune |
 |------|-------------|
@@ -207,7 +207,7 @@ If you have VRAM for one model at a time:
 | Pure chat night | Instruct 7B (no vision) |
 | Market flip night | Qwen3-VL 2B/7B |
 
-Swap in LM Studio; keep server on. Chat Helper does not need a config change.
+Swap in LM Studio; keep server on. Hyperline does not need a config change.
 
 ### 5.6 Optional: custom API URL
 
@@ -227,7 +227,7 @@ If LM Studio uses another port (e.g. 1235), edit `chat_helper_config.json` while
 - [ ] LM Studio installed  
 - [ ] Model downloaded + **loaded**  
 - [ ] Local Server **started** on port 1234  
-- [ ] Chat Helper shows **AI · on**  
+- [ ] Hyperline shows **AI · on**  
 - [ ] Write an LFG → Copy works under char limit  
 - [ ] (Optional) Tesseract installed for chat grab  
 - [ ] (Optional) VL model loaded → Economy Set market area → Snap + price  
@@ -239,7 +239,7 @@ If LM Studio uses another port (e.g. 1235), edit `chat_helper_config.json` while
 
 | Symptom | Fix |
 |---------|-----|
-| **AI · off** but LM Studio open | Start **Local Server**; load a model; use port **1234**; restart Chat Helper |
+| **AI · off** but LM Studio open | Start **Local Server**; load a model; use port **1234**; restart Hyperline |
 | AI · off, server running | Prefer `127.0.0.1` not `localhost`; firewall allow LM Studio; only one process on 1234 |
 | Write returns offline pack | Same as above; hover AI chip for last probe detail |
 | Economy empty / nonsense | Load **vision** model; tighter market crop; fill **My item**; try Re-price last shot |
@@ -296,10 +296,10 @@ A: **Qwen3-VL 2B Instruct (Q4)** — balances chat, chat-OCR, and market snaps o
 | `FEATURES.md` | Feature inventory + design notes |
 | `COMMIT_MESSAGE.md` | Suggested GitHub commit title/body |
 | `requirements.txt` | Python dependencies |
-| `Start Gamers Chat Helper.bat` | Launcher |
+| `Start Hyperline.bat` | Launcher |
 
 In the app: **Help → Setup & FAQ (LM Studio)** · **Help → Full Manual** · **Help → Open SETUP_AND_FAQ.md**.
 
 ---
 
-*Gamer’s Chat Helper — local companion. Not affiliated with LM Studio, Steam, or game publishers.*
+*Hyperline AI — local companion. Not affiliated with LM Studio, Steam, or game publishers.*
