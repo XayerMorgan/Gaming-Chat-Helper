@@ -53,6 +53,7 @@
 - Restart (header + Setup)  
 - Type scale; house style editor  
 - Steam population log intervals; chart with real time X-axis, peak/min markers  
+- Per-game boss-timer pages with an embedded compatibility view and full-browser fallback
 - Session Steam peak toasts  
 
 ### Session / fun / power user
@@ -78,6 +79,7 @@
 | `gamers_chat_helper.py` | Main application |
 | `Start Hyperline.bat` | Windows launcher |
 | `chat_helper_config.json` | User settings |
+| `boss_timer_sites.defaults.json` | Shipped per-game boss-timer URLs |
 | `HELP_MANUAL.md` | End-user manual |
 | `FEATURES.md` | This document |
 | `requirements.txt` | Python deps |

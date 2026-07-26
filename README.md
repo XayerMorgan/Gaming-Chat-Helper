@@ -23,10 +23,16 @@
 - **Screen OCR** — Calibrate chat region; Tesseract and/or vision model
 - **Economy** — Snap market UI → VL/OCR comps + suggested list price + WTS line (no public market API)
 - **Vengeance List** — Track in-game player or guild rivals; combat-log OCR suggests names
+- **Boss Timers** — Per-game event-page URLs with an embedded compatibility view and browser fallback
 - **Steam population** — Live concurrent players, overnight TSV log, chart with peak/min, high/low trend report, **Copy for Discord**
 - **Calculator** — Simple pad with thousand separators and optional keyboard capture
 - **Help system** — Menu bar, full manual, F1 context help, hover tooltips
 - **Hotkeys** — F6 Write · F7 Copy · F8 Market snap · F9 Re-price · F10 Oracle (when enabled)
+
+The Chat Generator includes vertical and horizontal scrolling for smaller
+screens and larger type settings. Boss-timer defaults are shipped in
+`boss_timer_sites.defaults.json`; user overrides remain in the private,
+Git-ignored `chat_helper_config.json`.
 
 ---
 

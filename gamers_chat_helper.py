@@ -25,6 +25,12 @@ import customtkinter as ctk
 import pyperclip
 import requests
 
+from hyperline_boss_timers import (
+    load_boss_timer_defaults,
+    merge_boss_timer_sites,
+    normalize_timer_url,
+    sanitize_boss_timer_sites,
+)
 from hyperline_generation import (
     VARIETY_DESCRIPTIONS,
     VARIETY_OPTIONS,
@@ -48,6 +54,14 @@ from hyperline_vengeance import (
     make_vengeance_entry,
     sanitize_vengeance_entries,
 )
+
+try:
+    from tkinterweb import HtmlFrame
+
+    _HAS_TKINTERWEB = True
+except Exception:
+    HtmlFrame = None  # type: ignore
+    _HAS_TKINTERWEB = False
 
 try:
     from PIL import Image, ImageGrab, ImageEnhance, ImageOps
@@ -188,6 +202,7 @@ PROFILE_PACK_PATH = os.path.join(APP_DIR, "hyperline_profile.json")
 HELP_MANUAL_PATH = os.path.join(APP_DIR, "HELP_MANUAL.md")
 FEATURES_PATH = os.path.join(APP_DIR, "FEATURES.md")
 RECRUIT_TEMPLATES_PATH = os.path.join(APP_DIR, "recruit_templates.json")
+BOSS_TIMER_DEFAULTS_PATH = os.path.join(APP_DIR, "boss_timer_sites.defaults.json")
 DIAGNOSTIC_LOG_PATH = os.path.join(APP_DIR, "hyperline.log")
 RECRUIT_PLACEHOLDER = "(type a guild pitch below)"
 MACROS_MAX = 3
@@ -225,6 +240,15 @@ HELP_CONTEXT = {
         "• Presets: Wife aggro · Boss · Bedtime · World boss · Custom\n"
         "• Fires toast + optional beep; repeating timers re-arm automatically\n\n"
         "Open Help → Full Manual for more."
+    ),
+    "Boss Timers": (
+        "BOSS & EVENT TIMERS\n\n"
+        "Each game can use a different timer page.\n\n"
+        "• Paste a complete URL and choose Save for game\n"
+        "• Reload refreshes the embedded compatibility view\n"
+        "• Open live page provides full JavaScript behavior in your browser\n"
+        "• The embedded view refreshes every 60 seconds while this tab is open\n\n"
+        "The Quinfall defaults to the Quinfall Codex events page."
     ),
     "Calculator": (
         "CALCULATOR\n\n"
@@ -1859,6 +1883,12 @@ class GamersChatHelper:
             g: [dict(x) for x in (DEFAULT_GAME_SITES.get(g) or [])]
             for g in GAME_PROFILES
         }
+        self.boss_timer_default_sites = load_boss_timer_defaults(
+            BOSS_TIMER_DEFAULTS_PATH
+        )
+        self.boss_timer_sites: dict[str, str] = dict(
+            self.boss_timer_default_sites
+        )
         self.time_alarms: list[dict] = []
         self.time_beep_enabled = True
         self.saved_house_styles: dict[str, str] = {}
@@ -2013,6 +2043,10 @@ class GamersChatHelper:
                 if self.default_game not in GAME_PROFILES:
                     self.default_game = "The Quinfall"
                 # Time tab: sites + alarms
+                self.boss_timer_sites = merge_boss_timer_sites(
+                    self.boss_timer_default_sites,
+                    data.get("boss_timer_sites") or {},
+                )
                 gsites = data.get("game_sites") or {}
                 if isinstance(gsites, dict):
                     for gname, rows in gsites.items():
@@ -2254,6 +2288,9 @@ class GamersChatHelper:
             "game_settings": self._game_settings_for_save(),
             # Time tab
             "game_sites": getattr(self, "game_sites", {}) or {},
+            "boss_timer_sites": sanitize_boss_timer_sites(
+                getattr(self, "boss_timer_sites", {}) or {}
+            ),
             "time_alarms": list(getattr(self, "time_alarms", []) or [])[:40],
             "time_beep_enabled": bool(getattr(self, "time_beep_enabled", True)),
         }
@@ -3553,6 +3590,7 @@ class GamersChatHelper:
             corner_radius=14,
             border_width=1,
             border_color=C["line"],
+            command=self._on_main_tab_changed,
         )
         self.tabview.pack(fill="both", expand=True)
         try:
@@ -3574,6 +3612,7 @@ class GamersChatHelper:
             "Library",
             "Vengeance List",
             "Time",
+            "Boss Timers",
             "Calculator",
             "Economy",
             "Setup",
@@ -3584,6 +3623,7 @@ class GamersChatHelper:
         self.build_library_tab()
         self.build_vengeance_tab()
         self.build_time_tab()
+        self.build_boss_timer_tab()
         self.build_calculator_tab()
         self.build_economy_tab()
         self.build_setup_tab()
@@ -3662,7 +3702,8 @@ class GamersChatHelper:
             pass
         # Fallback if file missing
         parts = [HELP_CONTEXT.get(k, "") for k in (
-            "Chat Generator", "Library", "Time", "Calculator", "Economy", "Setup",
+            "Chat Generator", "Library", "Time", "Boss Timers",
+            "Calculator", "Economy", "Setup",
         )]
         return (
             f"# {APP_NAME_FULL} v{APP_VERSION}\n\n"
@@ -4800,8 +4841,63 @@ class GamersChatHelper:
 
     def build_generator_tab(self):
         """Single intent-driven Chat Generator (replaces Quick/Wingman/Recruit)."""
-        tab = self.tabview.tab("Chat Generator")
-        tab.configure(fg_color=C["surface"])
+        tab_host = self.tabview.tab("Chat Generator")
+        tab_host.configure(fg_color=C["surface"])
+        self.generator_tab_host = tab_host
+
+        # Tkinter/CTk's stock scrollable frame is vertical-only. The generator has
+        # dense cards and user-resizable fields, so use a canvas with both axes.
+        scroll_shell = ctk.CTkFrame(tab_host, fg_color=C["surface"], corner_radius=0)
+        scroll_shell.pack(fill="both", expand=True)
+        scroll_shell.grid_rowconfigure(0, weight=1)
+        scroll_shell.grid_columnconfigure(0, weight=1)
+        self.generator_canvas = tk.Canvas(
+            scroll_shell,
+            bg=C["surface"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self.generator_canvas.grid(row=0, column=0, sticky="nsew")
+        self.generator_vscroll = ctk.CTkScrollbar(
+            scroll_shell,
+            orientation="vertical",
+            command=self.generator_canvas.yview,
+        )
+        self.generator_vscroll.grid(row=0, column=1, sticky="ns")
+        self.generator_hscroll = ctk.CTkScrollbar(
+            scroll_shell,
+            orientation="horizontal",
+            command=self.generator_canvas.xview,
+        )
+        self.generator_hscroll.grid(row=1, column=0, sticky="ew")
+        self.generator_canvas.configure(
+            yscrollcommand=self.generator_vscroll.set,
+            xscrollcommand=self.generator_hscroll.set,
+        )
+
+        tab = ctk.CTkFrame(self.generator_canvas, fg_color=C["surface"], corner_radius=0)
+        self.generator_content = tab
+        self._generator_canvas_window = self.generator_canvas.create_window(
+            (0, 0),
+            window=tab,
+            anchor="nw",
+        )
+
+        def _sync_generator_scrollregion(_event=None):
+            self.generator_canvas.configure(
+                scrollregion=self.generator_canvas.bbox("all"),
+            )
+
+        def _size_generator_content(event):
+            min_width = sz(920)
+            self.generator_canvas.itemconfigure(
+                self._generator_canvas_window,
+                width=max(min_width, int(event.width)),
+            )
+            _sync_generator_scrollregion()
+
+        tab.bind("<Configure>", _sync_generator_scrollregion)
+        self.generator_canvas.bind("<Configure>", _size_generator_content)
 
         # ---- Onboarding ----
         self.onboard_card = ctk.CTkFrame(
@@ -4831,18 +4927,6 @@ class GamersChatHelper:
             font=f_ui(13, "bold"), fg_color=C["accent"], hover_color=C["accent_h"],
             command=self.dismiss_onboarding,
         ).pack(fill="x", padx=pad(14), pady=(pad(4), pad(12)))
-
-        # Optional HUD banner art (assets/banner.png)
-        if getattr(self, "show_banner", True):
-            try:
-                ban = self.assets.banner(size=(max(640, sz(720)), max(64, sz(72))))
-                if ban is not None:
-                    self._banner_img = ban
-                    ban_fr = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
-                    ban_fr.pack(fill="x", padx=pad(10), pady=(pad(8) if self.onboarding_done else pad(4), pad(4)))
-                    ctk.CTkLabel(ban_fr, text="", image=ban).pack(fill="x", padx=pad(6), pady=pad(6))
-            except Exception:
-                pass
 
         # ---- Intent picker: LARGE icon+label buttons (visible graphics) ----
         intent_card = ctk.CTkFrame(
@@ -5316,6 +5400,25 @@ class GamersChatHelper:
         self.input_seed = ctk.CTkEntry(tab)
         self.input_seed.pack_forget()
 
+        def _scroll_generator(event):
+            steps = -int(event.delta / 120) if event.delta else 0
+            if not steps:
+                return
+            if event.state & 0x0001:
+                self.generator_canvas.xview_scroll(steps, "units")
+            else:
+                self.generator_canvas.yview_scroll(steps, "units")
+            return "break"
+
+        def _bind_scroll_tree(widget):
+            try:
+                widget.bind("<MouseWheel>", _scroll_generator, add="+")
+                for child in widget.winfo_children():
+                    _bind_scroll_tree(child)
+            except Exception:
+                pass
+
+        _bind_scroll_tree(tab)
         self._apply_advanced_visibility()
         self._show_intent_panel(self.generator_intent.get())
         # msg_textbox aliases gen_editor — now safe to load recruit pitch into Your Line
@@ -7556,6 +7659,242 @@ class GamersChatHelper:
         try:
             if self.root.state() == "iconic":
                 self.root.deiconify()
+        except Exception:
+            pass
+
+    def _on_main_tab_changed(self):
+        """Load heavier tab content only when the user actually opens that tab."""
+        try:
+            if self.tabview.get() == "Boss Timers":
+                self.refresh_boss_timer_tab(load_page=True)
+        except Exception:
+            pass
+
+    def build_boss_timer_tab(self):
+        """Embedded, per-game boss/event timer page with a browser fallback."""
+        tab = self.tabview.tab("Boss Timers")
+        tab.configure(fg_color=C["surface"])
+
+        head = ctk.CTkFrame(
+            tab,
+            fg_color=C["elevated"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        head.pack(fill="x", padx=pad(10), pady=(pad(10), pad(6)))
+        title_row = ctk.CTkFrame(head, fg_color="transparent")
+        title_row.pack(fill="x", padx=pad(12), pady=(pad(10), pad(6)))
+        ctk.CTkLabel(
+            title_row,
+            text="BOSS & EVENT TIMERS",
+            font=f_ui(15, "bold"),
+            text_color=C["text"],
+        ).pack(side="left")
+        self.boss_timer_game_label = ctk.CTkLabel(
+            title_row,
+            text="",
+            font=f_ui(12, "bold"),
+            text_color=C["accent"],
+        )
+        self.boss_timer_game_label.pack(side="right")
+
+        url_row = ctk.CTkFrame(head, fg_color="transparent")
+        url_row.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
+        self.boss_timer_url_var = tk.StringVar(value="")
+        self.boss_timer_url_entry = ctk.CTkEntry(
+            url_row,
+            textvariable=self.boss_timer_url_var,
+            height=sz(34),
+            font=f_ui(12),
+            placeholder_text="https://example.com/game-events",
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+        )
+        self.boss_timer_url_entry.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, pad(6)),
+        )
+        ctk.CTkButton(
+            url_row,
+            text="Save for game",
+            width=sz(112),
+            height=sz(34),
+            font=f_ui(12, "bold"),
+            fg_color=C["accent"],
+            hover_color=C["accent_h"],
+            command=self.save_boss_timer_site,
+        ).pack(side="left", padx=(0, pad(6)))
+        ctk.CTkButton(
+            url_row,
+            text="Reload",
+            width=sz(78),
+            height=sz(34),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            command=lambda: self.refresh_boss_timer_tab(load_page=True, force=True),
+        ).pack(side="left", padx=(0, pad(6)))
+        ctk.CTkButton(
+            url_row,
+            text="Open live page",
+            width=sz(112),
+            height=sz(34),
+            font=f_ui(12, "bold"),
+            fg_color=C["info"],
+            hover_color=C["info_h"],
+            command=self.open_boss_timer_browser,
+        ).pack(side="left")
+
+        self.boss_timer_status = ctk.CTkLabel(
+            head,
+            text="",
+            font=f_ui(11),
+            text_color=C["muted"],
+            anchor="w",
+            justify="left",
+        )
+        self.boss_timer_status.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
+
+        web_host = ctk.CTkFrame(
+            tab,
+            fg_color=C["elevated"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        web_host.pack(fill="both", expand=True, padx=pad(10), pady=(0, pad(10)))
+        self.boss_timer_web = None
+        if _HAS_TKINTERWEB and HtmlFrame is not None:
+            try:
+                self.boss_timer_web = HtmlFrame(
+                    web_host,
+                    messages_enabled=False,
+                    javascript_enabled=False,
+                    vertical_scrollbar="auto",
+                    horizontal_scrollbar="auto",
+                    dark_theme_enabled=False,
+                    threading_enabled=True,
+                    crash_prevention_enabled=True,
+                    on_link_click=lambda url: webbrowser.open(url),
+                    on_navigate_fail=self._boss_timer_navigate_failed,
+                )
+                self.boss_timer_web.pack(
+                    fill="both",
+                    expand=True,
+                    padx=pad(4),
+                    pady=pad(4),
+                )
+            except Exception:
+                LOG.exception("Could not initialize embedded boss timer browser")
+                self.boss_timer_web = None
+        if self.boss_timer_web is None:
+            ctk.CTkLabel(
+                web_host,
+                text=(
+                    "Embedded web view is unavailable.\n"
+                    "Use Open live page, or install requirements.txt."
+                ),
+                font=f_ui(14),
+                text_color=C["muted"],
+                justify="center",
+            ).pack(expand=True)
+
+        self._boss_timer_loaded_url = ""
+        self.refresh_boss_timer_tab(load_page=False)
+        self.root.after(60_000, self._boss_timer_auto_refresh)
+
+    def _boss_timer_navigate_failed(self, url, error=None, code=None):
+        self.schedule_ui(
+            lambda: self.boss_timer_status.configure(
+                text=f"Embed could not load this page ({code or 'network'}). Use Open live page.",
+                text_color=C["warn"],
+            )
+        )
+
+    def active_boss_timer_url(self) -> str:
+        game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        return normalize_timer_url(
+            (getattr(self, "boss_timer_sites", {}) or {}).get(game, "")
+        )
+
+    def refresh_boss_timer_tab(self, load_page: bool = False, force: bool = False):
+        if not hasattr(self, "boss_timer_url_var"):
+            return
+        game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        url = self.active_boss_timer_url()
+        self.boss_timer_game_label.configure(text=game)
+        self.boss_timer_url_var.set(url)
+        if not url:
+            self.boss_timer_status.configure(
+                text=f"No timer page configured for {game}. Paste a URL and Save for game.",
+                text_color=C["muted"],
+            )
+            return
+        self.boss_timer_status.configure(
+            text=(
+                "Embedded compatibility view refreshes every 60 seconds. "
+                "Use Open live page for full JavaScript interactions."
+            ),
+            text_color=C["muted"],
+        )
+        if (
+            load_page
+            and self.boss_timer_web is not None
+            and (force or url != getattr(self, "_boss_timer_loaded_url", ""))
+        ):
+            self._boss_timer_loaded_url = url
+            try:
+                self.boss_timer_web.load_website(url)
+            except Exception:
+                LOG.exception("Could not load boss timer page %s", url)
+                self.boss_timer_status.configure(
+                    text="Embed failed to load. Use Open live page.",
+                    text_color=C["warn"],
+                )
+
+    def save_boss_timer_site(self):
+        game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        url = normalize_timer_url(self.boss_timer_url_var.get())
+        if not url:
+            messagebox.showwarning(
+                "Valid web address needed",
+                "Enter a complete http:// or https:// boss timer address.",
+            )
+            return
+        self.boss_timer_sites = dict(getattr(self, "boss_timer_sites", {}) or {})
+        self.boss_timer_sites[game] = url
+        self.save_settings()
+        self._boss_timer_loaded_url = ""
+        self.refresh_boss_timer_tab(load_page=True, force=True)
+        self.show_toast(f"Boss timer saved · {game}", kind="ok")
+
+    def open_boss_timer_browser(self):
+        url = normalize_timer_url(
+            self.boss_timer_url_var.get()
+            if hasattr(self, "boss_timer_url_var")
+            else self.active_boss_timer_url()
+        )
+        if not url:
+            self.show_toast("No boss timer page configured", kind="warn")
+            return
+        webbrowser.open(url)
+
+    def _boss_timer_auto_refresh(self):
+        if not getattr(self, "_alive", False):
+            return
+        try:
+            if self.tabview.get() == "Boss Timers":
+                self.refresh_boss_timer_tab(load_page=True, force=True)
+        except Exception:
+            pass
+        try:
+            self.root.after(60_000, self._boss_timer_auto_refresh)
         except Exception:
             pass
 
@@ -10328,6 +10667,15 @@ class GamersChatHelper:
         self.apply_game_theme(game)
         try:
             self.refresh_time_tab()
+        except Exception:
+            pass
+        try:
+            self.refresh_boss_timer_tab(
+                load_page=(
+                    hasattr(self, "tabview")
+                    and self.tabview.get() == "Boss Timers"
+                ),
+            )
         except Exception:
             pass
         try:
@@ -15811,6 +16159,9 @@ class GamersChatHelper:
             "guild_names": dict(getattr(self, "guild_names", {}) or {}),
             "house_styles": self._house_styles_for_save() if hasattr(self, "_house_styles_for_save") else {},
             "game_sites": dict(getattr(self, "game_sites", {}) or {}),
+            "boss_timer_sites": sanitize_boss_timer_sites(
+                getattr(self, "boss_timer_sites", {}) or {}
+            ),
             "macros": list(getattr(self, "macro_slots", ["", "", ""]) or [])[:MACROS_MAX],
             "recruit_templates": list(getattr(self, "recruit_templates", []) or []),
             "favorites": list(getattr(self, "favorites", []) or [])[:40],
@@ -15860,7 +16211,14 @@ class GamersChatHelper:
         ):
             # Allow plain dicts that look like our pack
             if not isinstance(data, dict) or not any(
-                k in data for k in ("guild_names", "recruit_templates", "house_styles", "game_sites")
+                k in data
+                for k in (
+                    "guild_names",
+                    "recruit_templates",
+                    "house_styles",
+                    "game_sites",
+                    "boss_timer_sites",
+                )
             ):
                 messagebox.showerror("Import failed", "Not a Hyperline profile pack.")
                 return
@@ -15888,6 +16246,11 @@ class GamersChatHelper:
                 }
             if isinstance(data.get("game_sites"), dict):
                 self.game_sites = data["game_sites"]
+            if isinstance(data.get("boss_timer_sites"), dict):
+                self.boss_timer_sites = merge_boss_timer_sites(
+                    self.boss_timer_default_sites,
+                    data["boss_timer_sites"],
+                )
             if isinstance(data.get("recruit_templates"), list):
                 self.recruit_templates = [
                     t for t in data["recruit_templates"] if isinstance(t, dict)

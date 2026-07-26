@@ -48,6 +48,10 @@ Hover almost any control for a short tooltip.
 
 Intent chips show only the controls you need.
 
+The generator has vertical and horizontal scrollbars, so every control remains
+reachable on smaller displays or at larger type sizes. The decorative banner was
+removed to keep the working controls higher on screen.
+
 | Intent | Purpose |
 |--------|---------|
 | **LFG** | Content + location + Party Finder + Write |
@@ -114,7 +118,23 @@ Track fictional in-game rivals:
 Combat-log layouts differ between games, so manual entry always remains available.
 The last combat capture is stored locally as `last_vengeance_capture.png`.
 
-### 3.4 Calculator
+### 3.4 Boss Timers
+
+**Boss Timers** keeps a separate event-page URL for each game. The Quinfall ships
+with `https://thequinfall-codex.com/events` as its default.
+
+- Edit the URL and choose **Save for game** to keep a different page for the
+  active game.
+- **Reload** refreshes the embedded compatibility view.
+- **Open live page** opens the same URL in your normal browser for pages that
+  require full JavaScript interaction.
+- The embedded view refreshes once per minute while the tab is active.
+
+Shipped defaults live in `boss_timer_sites.defaults.json`. Your changes live in
+the private, Git-ignored `chat_helper_config.json` and can also travel in a
+Hyperline profile export.
+
+### 3.5 Calculator
 
 Simple pad with thousand separators (`1,000,000`).
 
@@ -122,7 +142,7 @@ Simple pad with thousand separators (`1,000,000`).
 - **⌨ Keys: On** — 0–9, numpad, + − * /, Enter, Backspace, Esc  
   Only while this tab is selected.
 
-### 3.5 Economy (market snap)
+### 3.6 Economy (market snap)
 
 There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
@@ -138,7 +158,7 @@ There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
 **Best results:** vision model in LM Studio (e.g. Qwen3-VL), tight crop on the price list.
 
-### 3.6 Setup
+### 3.7 Setup
 
 - Full-width **Restart app**  
 - **Type size**  
@@ -216,6 +236,7 @@ Calculator Keys mode is separate (on the Calculator tab).
 | File | Purpose |
 |------|---------|
 | `chat_helper_config.json` | Settings, history, regions, macros |
+| `boss_timer_sites.defaults.json` | Shipped per-game boss-timer URLs |
 | `steam_players_log.txt` | Player samples (TSV) |
 | `economy_price_log.jsonl` | Economy snap log |
 | `last_chat_capture.png` | Last chat OCR image |
