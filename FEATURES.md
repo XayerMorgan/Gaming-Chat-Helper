@@ -54,6 +54,7 @@
 - Type scale; house style editor  
 - Steam population log intervals; chart with real time X-axis, peak/min markers  
 - Per-game boss-timer pages rendered as native cards with a full-browser fallback
+- Private per-game notes editor with explicit save, Ctrl+S, and safe clear
 - Session Steam peak toasts  
 
 ### Session / fun / power user

@@ -243,6 +243,15 @@ HELP_CONTEXT = {
         "• Timer cards refresh every 60 seconds while this tab is open\n\n"
         "The Quinfall defaults to the Quinfall Codex events page."
     ),
+    "Notes": (
+        "GAME NOTES\n\n"
+        "A private scratchpad for the currently selected game.\n\n"
+        "• Notes are stored separately for each game\n"
+        "• Save notes or press Ctrl+S in the editor\n"
+        "• Switching games automatically preserves the current draft\n"
+        "• Clear notes asks before deleting\n\n"
+        "Notes stay in your local, Git-ignored settings file."
+    ),
     "Calculator": (
         "CALCULATOR\n\n"
         "Simple pad with thousand separators (1,000,000).\n\n"
@@ -1882,6 +1891,7 @@ class GamersChatHelper:
         self.boss_timer_sites: dict[str, str] = dict(
             self.boss_timer_default_sites
         )
+        self.game_notes: dict[str, str] = {}
         self.time_alarms: list[dict] = []
         self.time_beep_enabled = True
         self.saved_house_styles: dict[str, str] = {}
@@ -2040,6 +2050,13 @@ class GamersChatHelper:
                     self.boss_timer_default_sites,
                     data.get("boss_timer_sites") or {},
                 )
+                raw_notes = data.get("game_notes") or {}
+                if isinstance(raw_notes, dict):
+                    self.game_notes = {
+                        str(game)[:100]: str(note)[:100_000]
+                        for game, note in raw_notes.items()
+                        if str(game).strip() and str(note).strip()
+                    }
                 gsites = data.get("game_sites") or {}
                 if isinstance(gsites, dict):
                     for gname, rows in gsites.items():
@@ -2284,6 +2301,7 @@ class GamersChatHelper:
             "boss_timer_sites": sanitize_boss_timer_sites(
                 getattr(self, "boss_timer_sites", {}) or {}
             ),
+            "game_notes": self._game_notes_for_save(),
             "time_alarms": list(getattr(self, "time_alarms", []) or [])[:40],
             "time_beep_enabled": bool(getattr(self, "time_beep_enabled", True)),
         }
@@ -3606,6 +3624,7 @@ class GamersChatHelper:
             "Vengeance List",
             "Time",
             "Boss Timers",
+            "Notes",
             "Calculator",
             "Economy",
             "Setup",
@@ -3617,6 +3636,7 @@ class GamersChatHelper:
         self.build_vengeance_tab()
         self.build_time_tab()
         self.build_boss_timer_tab()
+        self.build_notes_tab()
         self.build_calculator_tab()
         self.build_economy_tab()
         self.build_setup_tab()
@@ -3695,7 +3715,7 @@ class GamersChatHelper:
             pass
         # Fallback if file missing
         parts = [HELP_CONTEXT.get(k, "") for k in (
-            "Chat Generator", "Library", "Time", "Boss Timers",
+            "Chat Generator", "Library", "Time", "Boss Timers", "Notes",
             "Calculator", "Economy", "Setup",
         )]
         return (
@@ -7939,6 +7959,175 @@ class GamersChatHelper:
         except Exception:
             pass
 
+    def build_notes_tab(self):
+        """Private per-game scratchpad."""
+        tab = self.tabview.tab("Notes")
+        tab.configure(fg_color=C["surface"])
+
+        wrap = ctk.CTkFrame(
+            tab,
+            fg_color=C["elevated"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        wrap.pack(fill="both", expand=True, padx=pad(10), pady=pad(10))
+
+        head = ctk.CTkFrame(wrap, fg_color="transparent")
+        head.pack(fill="x", padx=pad(14), pady=(pad(12), pad(8)))
+        ctk.CTkLabel(
+            head,
+            text="GAME NOTES",
+            font=f_ui(15, "bold"),
+            text_color=C["text"],
+        ).pack(side="left")
+        self.notes_game_label = ctk.CTkLabel(
+            head,
+            text="",
+            font=f_ui(12, "bold"),
+            text_color=C["accent"],
+        )
+        self.notes_game_label.pack(side="right")
+
+        self.notes_editor = ctk.CTkTextbox(
+            wrap,
+            font=f_mono(13),
+            fg_color=C["surface"],
+            text_color=C["text"],
+            border_width=1,
+            border_color=C["line"],
+            corner_radius=10,
+            wrap="word",
+            undo=True,
+        )
+        self.notes_editor.pack(
+            fill="both",
+            expand=True,
+            padx=pad(14),
+            pady=(0, pad(8)),
+        )
+        self.notes_editor.bind("<KeyRelease>", self._update_notes_count, add="+")
+        self.notes_editor.bind("<Control-s>", self._notes_ctrl_save, add="+")
+
+        foot = ctk.CTkFrame(wrap, fg_color="transparent")
+        foot.pack(fill="x", padx=pad(14), pady=(0, pad(12)))
+        self.notes_status_label = ctk.CTkLabel(
+            foot,
+            text="Private local notes · 0 characters",
+            font=f_ui(11),
+            text_color=C["muted"],
+            anchor="w",
+        )
+        self.notes_status_label.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            foot,
+            text="Clear",
+            width=sz(82),
+            height=sz(34),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            command=self.clear_game_notes,
+        ).pack(side="right", padx=(pad(6), 0))
+        ctk.CTkButton(
+            foot,
+            text="Save notes",
+            width=sz(112),
+            height=sz(34),
+            font=f_ui(12, "bold"),
+            fg_color=C["accent"],
+            hover_color=C["accent_h"],
+            command=self.save_game_notes,
+        ).pack(side="right")
+
+        self._notes_game = ""
+        self.refresh_notes_tab()
+
+    def _notes_text(self) -> str:
+        if not hasattr(self, "notes_editor"):
+            return ""
+        return self.notes_editor.get("1.0", "end-1c")[:100_000]
+
+    def _game_notes_for_save(self) -> dict[str, str]:
+        notes = dict(getattr(self, "game_notes", {}) or {})
+        editing_game = getattr(self, "_notes_game", "")
+        if editing_game and hasattr(self, "notes_editor"):
+            text = self._notes_text()
+            if text.strip():
+                notes[editing_game] = text
+            else:
+                notes.pop(editing_game, None)
+        return {
+            str(game)[:100]: str(note)[:100_000]
+            for game, note in notes.items()
+            if str(game).strip() and str(note).strip()
+        }
+
+    def refresh_notes_tab(self):
+        if not hasattr(self, "notes_editor"):
+            return
+        game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        previous = getattr(self, "_notes_game", "")
+        if previous and previous != game:
+            current = self._notes_text()
+            if current.strip():
+                self.game_notes[previous] = current
+            else:
+                self.game_notes.pop(previous, None)
+        self._notes_game = game
+        text = (getattr(self, "game_notes", {}) or {}).get(game, "")
+        self.notes_editor.delete("1.0", "end")
+        if text:
+            self.notes_editor.insert("1.0", text)
+        self.notes_editor.edit_modified(False)
+        self.notes_game_label.configure(text=game)
+        self._update_notes_count()
+
+    def _update_notes_count(self, _event=None):
+        if not hasattr(self, "notes_status_label"):
+            return
+        count = len(self._notes_text())
+        self.notes_status_label.configure(
+            text=f"Private local notes · {count:,} characters · Ctrl+S saves"
+        )
+
+    def _notes_ctrl_save(self, _event=None):
+        self.save_game_notes()
+        return "break"
+
+    def save_game_notes(self, quiet: bool = False):
+        game = getattr(self, "_notes_game", "") or (
+            self.game_var.get() if hasattr(self, "game_var") else self.default_game
+        )
+        text = self._notes_text()
+        if text.strip():
+            self.game_notes[game] = text
+        else:
+            self.game_notes.pop(game, None)
+        self.save_settings()
+        self._update_notes_count()
+        if not quiet:
+            self.show_toast(f"Notes saved · {game}", kind="ok")
+            self.set_status(f"Saved private notes for {game}")
+
+    def clear_game_notes(self):
+        game = getattr(self, "_notes_game", "") or self.default_game
+        if not self._notes_text().strip():
+            return
+        if not messagebox.askyesno(
+            "Clear game notes?",
+            f"Delete all notes for {game}?",
+            parent=self.root,
+        ):
+            return
+        self.notes_editor.delete("1.0", "end")
+        self.game_notes.pop(game, None)
+        self.save_settings()
+        self._update_notes_count()
+        self.show_toast(f"Notes cleared · {game}", kind="info")
+
     def build_calculator_tab(self):
         """Simple four-function calculator with optional keyboard capture mode."""
         tab = self.tabview.tab("Calculator")
@@ -10717,6 +10906,10 @@ class GamersChatHelper:
                     and self.tabview.get() == "Boss Timers"
                 ),
             )
+        except Exception:
+            pass
+        try:
+            self.refresh_notes_tab()
         except Exception:
             pass
         try:
@@ -16203,6 +16396,7 @@ class GamersChatHelper:
             "boss_timer_sites": sanitize_boss_timer_sites(
                 getattr(self, "boss_timer_sites", {}) or {}
             ),
+            "game_notes": self._game_notes_for_save(),
             "macros": list(getattr(self, "macro_slots", ["", "", ""]) or [])[:MACROS_MAX],
             "recruit_templates": list(getattr(self, "recruit_templates", []) or []),
             "favorites": list(getattr(self, "favorites", []) or [])[:40],
@@ -16259,6 +16453,7 @@ class GamersChatHelper:
                     "house_styles",
                     "game_sites",
                     "boss_timer_sites",
+                    "game_notes",
                 )
             ):
                 messagebox.showerror("Import failed", "Not a Hyperline profile pack.")
@@ -16291,6 +16486,14 @@ class GamersChatHelper:
                 self.boss_timer_sites = merge_boss_timer_sites(
                     self.boss_timer_default_sites,
                     data["boss_timer_sites"],
+                )
+            if isinstance(data.get("game_notes"), dict):
+                self.game_notes.update(
+                    {
+                        str(game)[:100]: str(note)[:100_000]
+                        for game, note in data["game_notes"].items()
+                        if str(game).strip() and str(note).strip()
+                    }
                 )
             if isinstance(data.get("recruit_templates"), list):
                 self.recruit_templates = [

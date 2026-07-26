@@ -24,6 +24,7 @@
 - **Economy** — Snap market UI → VL/OCR comps + suggested list price + WTS line (no public market API)
 - **Vengeance List** — Track in-game player or guild rivals; combat-log OCR suggests names
 - **Boss Timers** — Per-game event-page URLs rendered as native timer cards, with a browser fallback
+- **Notes** — Private per-game scratchpad with automatic preservation when switching games
 - **Steam population** — Live concurrent players, overnight TSV log, chart with peak/min, high/low trend report, **Copy for Discord**
 - **Calculator** — Simple pad with thousand separators and optional keyboard capture
 - **Help system** — Menu bar, full manual, F1 context help, hover tooltips

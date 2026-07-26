@@ -134,7 +134,20 @@ Shipped defaults live in `boss_timer_sites.defaults.json`. Your changes live in
 the private, Git-ignored `chat_helper_config.json` and can also travel in a
 Hyperline profile export.
 
-### 3.5 Calculator
+### 3.5 Notes
+
+**Notes** is a private scratchpad stored separately for each game.
+
+- Write freely in the large, scrollable editor.
+- Choose **Save notes** or press **Ctrl+S** while editing.
+- Switching games automatically preserves the current draft and loads that
+  game's notes.
+- **Clear** asks for confirmation before deleting the active game's notes.
+
+Notes are stored in the local, Git-ignored `chat_helper_config.json`. They are
+also included when you intentionally export a Hyperline profile.
+
+### 3.6 Calculator
 
 Simple pad with thousand separators (`1,000,000`).
 
@@ -142,7 +155,7 @@ Simple pad with thousand separators (`1,000,000`).
 - **⌨ Keys: On** — 0–9, numpad, + − * /, Enter, Backspace, Esc  
   Only while this tab is selected.
 
-### 3.6 Economy (market snap)
+### 3.7 Economy (market snap)
 
 There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
@@ -158,7 +171,7 @@ There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
 **Best results:** vision model in LM Studio (e.g. Qwen3-VL), tight crop on the price list.
 
-### 3.7 Setup
+### 3.8 Setup
 
 - Full-width **Restart app**  
 - **Type size**  
