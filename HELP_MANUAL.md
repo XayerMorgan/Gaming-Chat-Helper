@@ -76,6 +76,13 @@ OCR and Economy stay accuracy-focused. Noise uses its separate **Chaos** control
 
 Last capture: `last_chat_capture.png` next to the app.
 
+#### Game context screenshots
+
+Use **File → Save game context screenshot** to briefly hide Hyperline and save the
+foreground game window for later reference. Screenshots are timestamped in
+`context_captures/` beside the app. Use **File → Open context screenshots** to review
+them. This local folder is created when Hyperline starts and is excluded from Git.
+
 ### 3.2 Library
 
 History and favorites: re-copy, star, delete. Manage stock lines.
@@ -199,6 +206,7 @@ Calculator Keys mode is separate (on the Calculator tab).
 | `economy_price_log.jsonl` | Economy snap log |
 | `last_chat_capture.png` | Last chat OCR image |
 | `last_market_capture.png` | Last market snap |
+| `context_captures/` | Timestamped game-context screenshots (local, Git-ignored) |
 | `session_export.txt` | Session dump (Export) |
 | `HELP_MANUAL.md` | This manual |
 | `SETUP_AND_FAQ.md` | Install, LM Studio, models, tuning, FAQ |
@@ -225,7 +233,7 @@ Calculator Keys mode is separate (on the Calculator tab).
 ## 9. Privacy
 
 - Runs **locally**.  
-- Chat/market images saved only as last-capture PNGs on disk.  
+- Chat/market images and optional context screenshots are saved only on local disk.
 - No cloud accounts.  
 - Steam player count is a public Steam endpoint (count only, not your account).
 
@@ -236,6 +244,8 @@ Calculator Keys mode is separate (on the Calculator tab).
 **File**
 
 - Export session pack  
+- Save game context screenshot
+- Open context screenshots
 - Open app folder  
 - Restart app  
 - Exit  

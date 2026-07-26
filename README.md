@@ -112,7 +112,8 @@ On first run the app writes `chat_helper_config.json` next to the script.
 └── chat_helper_config.json    # User settings (created at runtime)
 ```
 
-Runtime / local data (typically **not** committed): Steam log, economy log, last OCR/market captures, personal config.
+Runtime / local data (typically **not** committed): Steam log, economy log, last OCR/market captures,
+timestamped `context_captures/`, and personal config.
 
 ---
 

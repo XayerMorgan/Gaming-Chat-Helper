@@ -73,6 +73,7 @@ except Exception:
 
 try:
     import ctypes
+    from ctypes import wintypes
 
     _USER32 = ctypes.windll.user32
     _HAS_WIN32 = True
@@ -179,6 +180,7 @@ GAMES_ASSETS_DIR = os.path.join(ASSETS_DIR, "games")
 LAST_OCR_PATH = os.path.join(APP_DIR, "last_chat_capture.png")
 LAST_MARKET_PATH = os.path.join(APP_DIR, "last_market_capture.png")
 LAST_VENGEANCE_PATH = os.path.join(APP_DIR, "last_vengeance_capture.png")
+CONTEXT_CAPTURE_DIR = os.path.join(APP_DIR, "context_captures")
 STEAM_LOG_PATH = os.path.join(APP_DIR, "steam_players_log.txt")
 ECONOMY_LOG_PATH = os.path.join(APP_DIR, "economy_price_log.jsonl")
 SESSION_EXPORT_PATH = os.path.join(APP_DIR, "session_export.txt")
@@ -1600,6 +1602,10 @@ def _png_bytes(im: "Image.Image") -> bytes:
 class GamersChatHelper:
     def __init__(self, root: ctk.CTk):
         self.root = root
+        try:
+            os.makedirs(CONTEXT_CAPTURE_DIR, exist_ok=True)
+        except OSError:
+            LOG.exception("Could not create context screenshot directory")
         resolve_app_fonts()
         self.root.title(f"{APP_NAME}  ·  v{APP_VERSION}")
         self.root.configure(fg_color=C["bg"])
@@ -3612,6 +3618,15 @@ class GamersChatHelper:
             file_m.add_command(label="Export profile pack…", command=self.export_profile_pack)
             file_m.add_command(label="Import profile pack…", command=self.import_profile_pack)
             file_m.add_separator()
+            file_m.add_command(
+                label="Save game context screenshot",
+                command=self.capture_game_context,
+            )
+            file_m.add_command(
+                label="Open context screenshots",
+                command=self.open_context_capture_folder,
+            )
+            file_m.add_separator()
             file_m.add_command(label="Open app folder", command=self.open_app_folder)
             file_m.add_separator()
             file_m.add_command(label="Restart app", command=self.restart_app)
@@ -4126,6 +4141,76 @@ class GamersChatHelper:
             os.startfile(APP_DIR)  # type: ignore[attr-defined]
         except Exception:
             self.show_toast(APP_DIR, kind="info")
+
+    def open_context_capture_folder(self):
+        """Open the runtime-only archive of game-context screenshots."""
+        try:
+            os.makedirs(CONTEXT_CAPTURE_DIR, exist_ok=True)
+            os.startfile(CONTEXT_CAPTURE_DIR)  # type: ignore[attr-defined]
+        except Exception:
+            self.show_toast(CONTEXT_CAPTURE_DIR, kind="info")
+
+    def capture_game_context(self):
+        """Hide Hyperline and save the foreground game window for later reference."""
+        if not _HAS_PIL or ImageGrab is None:
+            messagebox.showerror("Pillow required", "Install Pillow to capture the game screen.")
+            return
+
+        was_top = bool(self.always_on_top.get()) if hasattr(self, "always_on_top") else False
+        try:
+            self.root.attributes("-topmost", False)
+            self.root.iconify()
+        except Exception:
+            pass
+        self.set_status("Capturing game context...")
+
+        def take_capture():
+            path = ""
+            error = ""
+            try:
+                os.makedirs(CONTEXT_CAPTURE_DIR, exist_ok=True)
+                bbox = None
+                if _HAS_WIN32:
+                    hwnd = self._foreground_hwnd()
+                    if hwnd and hwnd != self._app_hwnd and _USER32.IsWindowVisible(hwnd):
+                        rect = wintypes.RECT()
+                        if _USER32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                            candidate = (
+                                int(rect.left),
+                                int(rect.top),
+                                int(rect.right),
+                                int(rect.bottom),
+                            )
+                            if candidate[2] > candidate[0] and candidate[3] > candidate[1]:
+                                bbox = candidate
+                image = ImageGrab.grab(bbox=bbox, all_screens=True)
+                game = self.game_var.get() if hasattr(self, "game_var") else "game"
+                safe_game = re.sub(r"[^A-Za-z0-9_-]+", "-", game).strip("-") or "game"
+                stamp = (
+                    time.strftime("%Y-%m-%d_%H-%M-%S")
+                    + f"_{int(time.time() * 1000) % 1000:03d}"
+                )
+                path = os.path.join(CONTEXT_CAPTURE_DIR, f"{stamp}_{safe_game}.png")
+                image.save(path, format="PNG")
+            except Exception as exc:
+                error = str(exc)
+            finally:
+                try:
+                    self.root.deiconify()
+                    if was_top:
+                        self.root.attributes("-topmost", True)
+                except Exception:
+                    pass
+
+            if error:
+                self.show_toast("Context screenshot failed", kind="error")
+                self.set_status(f"Context capture failed - {error[:60]}")
+                return
+            self.show_toast(f"Context saved - {os.path.basename(path)}", kind="ok")
+            self.set_status(f"Game context saved - {path}")
+
+        # Give Windows time to expose the game underneath Hyperline.
+        self.root.after(350, take_capture)
 
     def apply_type_scale(self, key: str, rebuild: bool = True):
         key = set_type_scale(key)
