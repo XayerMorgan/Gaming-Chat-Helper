@@ -26,6 +26,40 @@ class _FakeTextbox:
 
 
 class RecruitPickerTests(unittest.TestCase):
+    def test_pitch_crud_labels_and_states_match_create_or_update(self):
+        app = object.__new__(GamersChatHelper)
+        app.recruit_templates = [{"id": "saved-1", "name": "Veterans", "text": "Hi"}]
+        app._recruit_selected_id = "saved-1"
+        app._recruit_dirty = False
+        app.recruit_save_btn = mock.Mock()
+        app.recruit_duplicate_btn = mock.Mock()
+        app.recruit_delete_btn = mock.Mock()
+        app.recruit_crud_status = mock.Mock()
+
+        app._update_recruit_crud_status()
+
+        app.recruit_save_btn.configure.assert_called_with(
+            text="Update pitch",
+            fg_color=mock.ANY,
+            hover_color=mock.ANY,
+            text_color=mock.ANY,
+        )
+        app.recruit_duplicate_btn.configure.assert_called_with(state="normal")
+        app.recruit_delete_btn.configure.assert_called_with(state="normal")
+
+        app._recruit_selected_id = None
+        app._recruit_dirty = True
+        app._update_recruit_crud_status()
+
+        app.recruit_save_btn.configure.assert_called_with(
+            text="Create pitch *",
+            fg_color=mock.ANY,
+            hover_color=mock.ANY,
+            text_color=mock.ANY,
+        )
+        app.recruit_duplicate_btn.configure.assert_called_with(state="disabled")
+        app.recruit_delete_btn.configure.assert_called_with(state="disabled")
+
     def test_picker_is_centered_over_hyperline_parent(self):
         app = object.__new__(GamersChatHelper)
         app.root = mock.Mock()

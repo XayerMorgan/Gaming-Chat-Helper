@@ -5559,7 +5559,7 @@ class GamersChatHelper:
     def _build_recruit_panel(self, parent):
         self._job_card_header(
             parent, "RECRUIT",
-            "Guild tag · AI write (seed optional) · Save to keep.",
+            "Load a pitch · edit Your Line · Create, Update, Duplicate, or Delete.",
             accent=C["accent"],
         )
 
@@ -5636,7 +5636,7 @@ class GamersChatHelper:
         )
         self.recruit_name_entry.pack(side="left", fill="x", expand=True, padx=(pad(6), 0))
 
-        # Primary actions only; secondary CRUD lives in ••• overflow
+        # Full pitch CRUD stays visible; these are core library actions, not overflow.
         crud = ctk.CTkFrame(parent, fg_color=C["surface"], corner_radius=10)
         crud.pack(fill="x", padx=pad(14), pady=(0, pad(8)))
         crud_inner = ctk.CTkFrame(crud, fg_color="transparent")
@@ -5655,16 +5655,28 @@ class GamersChatHelper:
             command=self.recruit_save,
         )
         self.recruit_save_btn.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
-        tip(self.recruit_save_btn, "Save Your Line as this pitch (or create if new draft).")
-        more_btn = ctk.CTkButton(
-            crud_inner, text="•••", height=sz(36), width=sz(44), font=f_ui(14, "bold"),
+        tip(
+            self.recruit_save_btn,
+            "Create a saved pitch from a New draft, or update the loaded pitch.",
+        )
+        self.recruit_duplicate_btn = ctk.CTkButton(
+            crud_inner, text="Duplicate", height=sz(36), width=sz(96),
+            font=f_ui(12, "bold"),
             fg_color=C["elevated"], hover_color=C["hover"], text_color=C["text"],
             border_width=1, border_color=C["line"],
-            command=self._open_recruit_overflow_menu,
+            command=self.recruit_duplicate,
         )
-        more_btn.pack(side="left")
-        tip(more_btn, "Save as new · Duplicate · Delete · Open file")
-        self.recruit_more_btn = more_btn
+        self.recruit_duplicate_btn.pack(side="left", padx=(0, pad(6)))
+        tip(self.recruit_duplicate_btn, "Create a new saved copy of the loaded pitch.")
+        self.recruit_delete_btn = ctk.CTkButton(
+            crud_inner, text="Delete", height=sz(36), width=sz(78),
+            font=f_ui(12, "bold"),
+            fg_color="transparent", hover_color=C["danger_dim"],
+            text_color=C["danger"], border_width=1, border_color=C["danger"],
+            command=self.recruit_delete,
+        )
+        self.recruit_delete_btn.pack(side="left")
+        tip(self.recruit_delete_btn, "Delete the loaded pitch after confirmation.")
 
         # Extra direction for this run (global SEED DIRECTIVE also applies when Use seed is on)
         seed_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -12371,17 +12383,19 @@ class GamersChatHelper:
         if not hasattr(self, "recruit_save_btn"):
             return
         dirty = bool(getattr(self, "_recruit_dirty", False))
+        item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
+        action = "Update pitch" if item else "Create pitch"
         try:
             if dirty:
                 self.recruit_save_btn.configure(
-                    text="Save *",
+                    text=f"{action} *",
                     fg_color=C["warn"],
                     hover_color="#d97706",
                     text_color="#1a1200",
                 )
             else:
                 self.recruit_save_btn.configure(
-                    text="Save",
+                    text=action,
                     fg_color=C["accent"],
                     hover_color=C["accent_h"],
                     text_color=C["text"],
@@ -12397,9 +12411,19 @@ class GamersChatHelper:
         item = self._find_recruit(getattr(self, "_recruit_selected_id", None))
         dirty = bool(getattr(self, "_recruit_dirty", False))
         try:
+            button_state = "normal" if item else "disabled"
+            for button_name in ("recruit_duplicate_btn", "recruit_delete_btn"):
+                button = getattr(self, button_name, None)
+                if button is not None:
+                    button.configure(state=button_state)
+            self._update_recruit_save_btn()
             if dirty:
                 self.recruit_crud_status.configure(
-                    text="Unsaved changes — press Save",
+                    text=(
+                        "Unsaved changes — Update pitch"
+                        if item
+                        else "New draft — Create pitch"
+                    ),
                     text_color=C["warn"],
                 )
             elif item:
@@ -12455,7 +12479,7 @@ class GamersChatHelper:
                 pass
         self.update_counter()
         self._update_recruit_crud_status()
-        self.show_toast("New draft — type a pitch, then Update", kind="info")
+        self.show_toast("New draft — type in Your Line, then Create pitch", kind="info")
 
     def recruit_save(self):
         """Update selected pitch, or Create if no selection → recruit_templates.json."""

@@ -61,6 +61,15 @@ Tweaks → Seed Directive**. With **Multiples** enabled, click a card to highlig
 it, then choose **Use highlighted in Your Line**. Checking **★ Star** also
 highlights that card and marks it for Favorites.
 
+Saved-pitch controls are always visible:
+
+- **Load** reads a saved pitch into **Your Line**.
+- **+ New** starts a blank draft; enter its label in **Pitch**, write the text in
+  **Your Line**, then choose **Create pitch**.
+- **Update pitch** saves edits back to the loaded pitch.
+- **Duplicate** creates a separately saved copy.
+- **Delete** removes the loaded pitch after confirmation.
+
 **Advanced Tweaks:** Mood, Heat (spiciness), Variety, LFG Need, “Grab chat: last line only”.
 
 **Variety controls chat wording only:**
