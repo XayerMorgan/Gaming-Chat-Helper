@@ -5031,6 +5031,7 @@ class GamersChatHelper:
 
         # ---- Advanced tweaks ----
         adv_wrap = ctk.CTkFrame(tab, fg_color=C["elevated"], corner_radius=12)
+        self.advanced_wrap = adv_wrap
         adv_wrap.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
         self.adv_toggle_btn = ctk.CTkButton(
             adv_wrap,
@@ -5264,6 +5265,15 @@ class GamersChatHelper:
             self.variant_btns.append(b)
 
         # Compact RECENT strip — history only (favorites live in list below)
+        # Primary workflow order: controls -> result/copy -> optional tuning -> seed.
+        # An expanded optional seed must not push the result below the fold.
+        for section in (self.intent_host, editor_card, adv_wrap, seed_card):
+            section.pack_forget()
+        self.intent_host.pack(fill="x", padx=pad(10), pady=(0, pad(4)))
+        editor_card.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
+        adv_wrap.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
+        seed_card.pack(fill="x", padx=pad(10), pady=(0, pad(6)))
+
         self.recent_card = ctk.CTkFrame(
             tab, fg_color=C["elevated"], corner_radius=12,
             border_width=1, border_color=C["line"],
@@ -12954,6 +12964,31 @@ class GamersChatHelper:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _position_toplevel_over_parent(self, win, width: int, height: int):
+        """Center a child window over Hyperline, including on a secondary monitor."""
+        self.root.update_idletasks()
+        parent_x = int(self.root.winfo_rootx())
+        parent_y = int(self.root.winfo_rooty())
+        parent_w = max(1, int(self.root.winfo_width()))
+        parent_h = max(1, int(self.root.winfo_height()))
+
+        if _HAS_WIN32:
+            screen_x = int(_USER32.GetSystemMetrics(76))
+            screen_y = int(_USER32.GetSystemMetrics(77))
+            screen_w = int(_USER32.GetSystemMetrics(78))
+            screen_h = int(_USER32.GetSystemMetrics(79))
+        else:
+            screen_x = 0
+            screen_y = 0
+            screen_w = int(self.root.winfo_screenwidth())
+            screen_h = int(self.root.winfo_screenheight())
+
+        x = parent_x + (parent_w - width) // 2
+        y = parent_y + (parent_h - height) // 2
+        x = max(screen_x, min(x, screen_x + screen_w - width))
+        y = max(screen_y, min(y, screen_y + screen_h - height))
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
     def _show_recruit_multiples_popup(self, lines: list[str]):
         """
         Modal picker for multi-recruit results.
@@ -12977,14 +13012,13 @@ class GamersChatHelper:
         win.title(f"Recruit options  ·  {len(lines)}")
         # Height scales a bit with count
         h = min(720, 220 + len(lines) * 58)
-        win.geometry(f"640x{h}")
+        self._position_toplevel_over_parent(win, 640, h)
         win.minsize(480, 320)
         win.configure(fg_color=C["bg"])
         try:
             win.transient(self.root)
+            win.lift(self.root)
             win.grab_set()
-            win.attributes("-topmost", True)
-            win.after(200, lambda: win.attributes("-topmost", False))
         except Exception:
             pass
         self._recruit_pick_win = win
@@ -13002,7 +13036,7 @@ class GamersChatHelper:
         ).pack(side="left", padx=pad(14), pady=pad(12))
         ctk.CTkLabel(
             header,
-            text="Click a line for Your Line · check ★ to star",
+            text="Click a card to highlight · ★ marks favorites",
             font=f_ui(12),
             text_color=C["muted"],
         ).pack(side="right", padx=pad(14), pady=pad(12))
@@ -13061,15 +13095,16 @@ class GamersChatHelper:
             fav_vars.append(fav_var)
             fav_cb = ctk.CTkCheckBox(
                 top,
-                text="★",
+                text="★ Star",
                 variable=fav_var,
-                width=sz(36),
+                width=sz(72),
                 font=f_ui(14, "bold"),
                 text_color=C["warn"],
                 fg_color=C["warn"],
                 hover_color=C.get("warn_h", C["warn"]),
                 border_color=C["line"],
                 checkmark_color="#1a1200",
+                command=lambda idx=i: _select_row(idx),
             )
             fav_cb.pack(side="left", padx=(0, pad(6)))
             tip(fav_cb, "Check to include this line when you Star selected.")
@@ -13128,7 +13163,7 @@ class GamersChatHelper:
                 self._recruit_pick_win = None
 
         def use_selected(_event=None):
-            """Close picker first, then write into Your Line (grab blocks parent edits)."""
+            """Release the modal, then synchronously write the highlighted option."""
             idx = int(selected_idx.get())
             if not (0 <= idx < len(lines)):
                 return
@@ -13137,13 +13172,11 @@ class GamersChatHelper:
                 self.show_toast("That option is empty", kind="warn")
                 return
             close()
-            # Must run AFTER grab is released — CTkTextbox on parent can fail while grabbed
-            def _apply():
-                self._apply_picked_recruit(line)
             try:
-                self.root.after(20, _apply)
+                self.root.update_idletasks()
             except Exception:
-                _apply()
+                pass
+            self._apply_picked_recruit(line)
 
         def star_checked():
             chosen = [
@@ -13182,19 +13215,17 @@ class GamersChatHelper:
             chosen = [c for c in chosen if c]
             close()
 
-            def _apply():
-                if chosen:
-                    self._star_recruit_lines(chosen)
-                self._apply_picked_recruit(line, also_star=None)
-
             try:
-                self.root.after(20, _apply)
+                self.root.update_idletasks()
             except Exception:
-                _apply()
+                pass
+            if chosen:
+                self._star_recruit_lines(chosen)
+            self._apply_picked_recruit(line, also_star=None)
 
         ctk.CTkButton(
             foot,
-            text="Use in Your Line",
+            text="Use highlighted in Your Line",
             height=sz(40),
             font=f_ui(13, "bold"),
             fg_color=C.get("primary", C["success"]),
@@ -13325,6 +13356,10 @@ class GamersChatHelper:
                     self.gen_editor.insert("0.0", line)
                 except Exception:
                     pass
+        if self.get_gen_text() != line:
+            self.show_toast("Failed to write Your Line — try again", kind="error")
+            self.set_status("Recruit option could not be applied")
+            return
         try:
             self._update_quick_out_meter()
             self.update_counter()
@@ -13362,11 +13397,8 @@ class GamersChatHelper:
             self.push_history(line, count=False)
 
         self._recruit_mark_dirty("AI rewrite not saved — press Save to keep")
-        if self.get_gen_text():
-            self.show_toast("In Your Line — ready to copy", kind="ok")
-            self.set_status("Recruit in Your Line — Save * to keep")
-        else:
-            self.show_toast("Failed to write Your Line — try again", kind="error")
+        self.show_toast("In Your Line — ready to copy", kind="ok")
+        self.set_status("Recruit in Your Line — Save * to keep")
 
     def generate_recruit_variant(self, n: int = 1, save_as_new: bool = False):
         """

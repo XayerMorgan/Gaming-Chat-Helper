@@ -56,6 +56,11 @@ Intent chips show only the controls you need.
 | **Recruit** | Guild pitch templates, fit to limit, Copy |
 | **Noise** | Non-game chaos (slider) + clean **Dad joke** |
 
+For **Recruit**, the working order is **Recruit controls → Your Line → Advanced
+Tweaks → Seed Directive**. With **Multiples** enabled, click a card to highlight
+it, then choose **Use highlighted in Your Line**. Checking **★ Star** also
+highlights that card and marks it for Favorites.
+
 **Advanced Tweaks:** Mood, Heat (spiciness), Variety, LFG Need, “Grab chat: last line only”.
 
 **Variety controls chat wording only:**
