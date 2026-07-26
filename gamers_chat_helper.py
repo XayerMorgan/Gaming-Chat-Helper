@@ -30,9 +30,14 @@ from hyperline_generation import (
     VARIETY_OPTIONS,
     apply_variety,
     closest_recent_line,
+    noise_creative_plan,
     normalize_variety,
+    procedural_noise_line,
+    procedural_recruit_line,
     random_seed,
-    retry_threshold,
+    recruit_creative_plan,
+    select_diverse_lines,
+    semantic_diversity_threshold,
     structure_direction,
 )
 from hyperline_persistence import atomic_write_json, configure_diagnostics
@@ -1710,6 +1715,10 @@ class GamersChatHelper:
         self._busy = False
         self._last_variants: list[str] = []
         self._last_gen_mode = "banter"
+        self._generation_plan_history: dict[str, list[str]] = {
+            "recruit": [],
+            "noise": [],
+        }
         self._last_good_line = self.history[-1] if self.history else ""
         self._toast_job = None
         self._full_geometry = self.saved_geometry or FULL_GEOMETRY
@@ -5011,9 +5020,9 @@ class GamersChatHelper:
         self.variety_hint.pack(side="left", fill="x", expand=True)
         variety_help = (
             "Chat writing only — OCR and Economy stay accuracy-focused.\n"
-            "Stable: closest to the original behavior; most consistent.\n"
-            "Varied: recommended; rotates phrasing and structure, and retries near-duplicates.\n"
-            "Wild: widest variation; may occasionally need a quick edit.\n"
+            "Stable: steady sampling, but still rotates high-level content angles.\n"
+            "Varied: recommended; new angles, phrasing, and structure plus semantic retries.\n"
+            "Wild: broadest concepts; may occasionally need a quick edit.\n"
             "Noise has its own separate Chaos control."
         )
         tip(self.variety_control, variety_help)
@@ -12802,12 +12811,12 @@ class GamersChatHelper:
         def work():
             used_offline = False
             if getattr(self, "_llm_online", None) is False:
-                results = [self._pick_recruit_local() for _ in range(n)]
+                results = [self._pick_recruit_local(fresh=True) for _ in range(n)]
                 used_offline = True
             else:
                 results = self.call_local_llm(prompt, n=n, job="recruit_fresh")
                 if results and all(self._is_err(r) for r in results):
-                    results = [self._pick_recruit_local() for _ in range(n)]
+                    results = [self._pick_recruit_local(fresh=True) for _ in range(n)]
                     used_offline = True
                     self._llm_online = False
                 elif results and not all(self._is_err(r) for r in results):
@@ -12829,7 +12838,7 @@ class GamersChatHelper:
                 guard = 0
                 while len(cleaned) < n and guard < n + 5:
                     guard += 1
-                    pad_line = self._pick_recruit_local()
+                    pad_line = self._pick_recruit_local(fresh=True)
                     if pad_line:
                         pad_line = self._ensure_guild_brackets(pad_line)
                     if pad_line and pad_line not in cleaned:
@@ -13832,6 +13841,39 @@ class GamersChatHelper:
         )
         return apply_variety(payload, job, variety)
 
+    def _creative_plan_block(self, job: str, count: int = 1) -> str:
+        """Build and remember high-level content plans so prompts vary semantically."""
+        family = (
+            "recruit"
+            if job in {"recruit", "recruit_fresh", "recruit_variant"}
+            else "noise"
+            if job == "noise"
+            else ""
+        )
+        if not family:
+            return ""
+        if not hasattr(self, "_generation_plan_history"):
+            self._generation_plan_history = {"recruit": [], "noise": []}
+        history = self._generation_plan_history.setdefault(family, [])
+        plans = []
+        for index in range(max(1, int(count))):
+            if family == "recruit":
+                plan_id, plan = recruit_creative_plan(history)
+            else:
+                plan_id, plan = noise_creative_plan(self._noise_level(), history)
+            history.append(plan_id)
+            del history[:-40]
+            if count > 1:
+                plans.append(f"OPTION {index + 1}:\n{plan}")
+            else:
+                plans.append(plan)
+        if count > 1:
+            return (
+                "\n\nDISTINCT CONTENT PLANS — each numbered output MUST follow its matching "
+                "plan; do not paraphrase one shared idea:\n" + "\n\n".join(plans)
+            )
+        return "\n\n" + plans[0]
+
     def call_local_llm(self, user_prompt: str, n: int = 1, job: str = "banter") -> list[str]:
         lim = self.limit()
         # Keep specialized multi-output jobs (recruit_variant, etc.); only fall back
@@ -13864,7 +13906,11 @@ class GamersChatHelper:
             if hasattr(self, "variety_var")
             else getattr(self, "saved_variety", "Varied")
         )
-        direction = structure_direction(job, variety)
+        base_content = content
+        plan_block = self._creative_plan_block(job, n)
+        if plan_block:
+            content += plan_block
+        direction = "" if plan_block else structure_direction(job, variety)
         if direction:
             content += f"\n\nVARIETY DIRECTION: {direction}"
 
@@ -13896,17 +13942,53 @@ class GamersChatHelper:
         raw, error = request_once(content)
         if error:
             return [error]
-        if n > 1:
-            return self._parse_numbered(raw, n, lim)
-
-        first = self._clean_line(raw, lim)
         recent = [
             line
-            for line in list(getattr(self, "history", []) or [])[-12:]
+            for line in list(getattr(self, "history", []) or [])[-20:]
             if line and line.strip()
         ]
+        if n > 1:
+            parsed = self._parse_numbered(raw, n, lim)
+            if job not in {"recruit", "recruit_fresh", "recruit_variant"}:
+                return parsed
+            threshold = semantic_diversity_threshold(variety, "recruit")
+            diverse = select_diverse_lines(parsed, recent, threshold)
+            if len(diverse) < n:
+                avoid = "; ".join((recent + parsed)[-10:])
+                retry_content = (
+                    base_content
+                    + self._creative_plan_block(job, n)
+                    + "\n\nSEMANTIC RESET: Produce different underlying appeals, not synonym "
+                    "swaps. Avoid these ideas/lines: "
+                    + avoid[:900]
+                )
+                retry_raw, retry_error = request_once(retry_content)
+                if not retry_error:
+                    retry_parsed = self._parse_numbered(retry_raw, n, lim)
+                    diverse = select_diverse_lines(
+                        diverse + retry_parsed,
+                        recent,
+                        threshold,
+                    )
+            # Preserve requested option count if a small model ignores diversity rules.
+            for candidate in parsed:
+                if len(diverse) >= n:
+                    break
+                if candidate and candidate not in diverse:
+                    diverse.append(candidate)
+            return diverse[:n]
+
+        first = self._clean_line(raw, lim)
+        family = (
+            "recruit"
+            if job in {"recruit", "recruit_fresh", "recruit_variant"}
+            else "noise"
+            if job == "noise"
+            else ""
+        )
+        threshold = semantic_diversity_threshold(variety, family)
         closest, similarity = closest_recent_line(first, recent)
-        if closest and similarity >= retry_threshold(variety):
+        if closest and similarity >= threshold:
             retry_content = (
                 content
                 + "\n\nNOVELTY RETRY: The first attempt was too similar to a recent line. "
@@ -14089,9 +14171,16 @@ class GamersChatHelper:
             return self._pick_comeback_local(they_said)
         return t
 
-    def _pick_recruit_local(self) -> str:
-        """Offline: use current recruit draft or first template, fit to limit."""
+    def _pick_recruit_local(self, fresh: bool = False) -> str:
+        """Offline recruit fallback; fresh mode uses broad procedural combinations."""
         lim = self.limit()
+        if fresh:
+            history = self._generation_plan_history.setdefault("recruit", [])
+            tag = self._guild_tag() if hasattr(self, "_guild_tag") else "[Guild]"
+            plan_id, text = procedural_recruit_line(tag, history)
+            history.append(plan_id)
+            del history[:-40]
+            return self.trim_to_limit(text) if len(text) > lim else text
         text = self.get_gen_text()
         if not text:
             items = getattr(self, "recruit_templates", None) or []
@@ -14116,7 +14205,9 @@ class GamersChatHelper:
             return self._pick_dad_joke_local()
         if j == "comeback":
             return self._pick_comeback_local(they_said)
-        if j in ("recruit", "recruit_variant", "recruit_fresh"):
+        if j == "recruit_fresh":
+            return self._pick_recruit_local(fresh=True)
+        if j in ("recruit", "recruit_variant"):
             return self._pick_recruit_local()
         if j in ("refine", "spice"):
             base = (seed_text or "").strip()
@@ -14154,8 +14245,12 @@ class GamersChatHelper:
         return fresh or pool or list(NOISE_PACKS.get(0, ["yo"]))
 
     def _pick_noise_local(self) -> str:
+        """Procedural offline Noise with a large combinatorial concept space."""
         lim = self.limit()
-        line = random.choice(self._noise_pool())
+        history = self._generation_plan_history.setdefault("noise", [])
+        plan_id, line = procedural_noise_line(self._noise_level(), history)
+        history.append(plan_id)
+        del history[:-40]
         if len(line) > lim:
             line = self.trim_to_limit(line)
         return line
@@ -14176,18 +14271,42 @@ class GamersChatHelper:
         return any(b in padded or b in low for b in banned)
 
     def _dedupe_against_history(self, line: str, fallback: Optional[str] = None) -> str:
-        """If model echoed a recent line, use fallback (or noise for ambient jobs)."""
+        """Replace surface-level and near-semantic repeats against recent history."""
         if not line or self._is_err(line):
             return line
-        norm = line.strip().lower()
-        for h in self.history[-12:]:
-            if h and h.strip().lower() == norm:
-                if fallback:
-                    return fallback
-                # Only ambient noise should auto-swap to the noise pack
-                if getattr(self, "_last_gen_mode", "") == "noise":
-                    return self._pick_noise_local()
-                return line
+        recent = [item for item in self.history[-20:] if item]
+        _, score = closest_recent_line(line, recent)
+        variety = normalize_variety(
+            self.variety_var.get()
+            if hasattr(self, "variety_var")
+            else getattr(self, "saved_variety", "Varied")
+        )
+        mode = getattr(self, "_last_gen_mode", "")
+        family = (
+            "recruit"
+            if mode in {"recruit", "recruit_fresh", "recruit_variant"}
+            else "noise"
+            if mode == "noise"
+            else ""
+        )
+        threshold = semantic_diversity_threshold(variety, family)
+        if score < threshold:
+            return line
+        if mode == "noise":
+            best = ""
+            best_score = 2.0
+            for _ in range(10):
+                candidate = self._pick_noise_local()
+                _, candidate_score = closest_recent_line(candidate, recent)
+                if candidate_score < best_score:
+                    best, best_score = candidate, candidate_score
+                if candidate_score < threshold:
+                    return candidate
+            return best or line
+        if fallback:
+            _, fallback_score = closest_recent_line(fallback, recent)
+            if fallback_score < score:
+                return fallback
         return line
 
     def _strip_hint_echo(self, line: str, hint: str) -> str:
@@ -14617,16 +14736,6 @@ class GamersChatHelper:
         self._last_gen_mode = "noise"
         level = self._noise_level()
         label = NOISE_LEVEL_LABELS.get(level, "Chaos")
-        topic_sparks = random.sample(
-            [
-                "tacos", "Stalin", "geese", "dentists", "the moon", "soup", "Napoleon",
-                "raccoons", "floppy disks", "sharks", "balloons", "pigeons", "frogs",
-                "taxes", "cereal", "ghosts", "library books", "refrigerators", "penguins",
-                "wheels", "wifi", "moths", "sandwiches", "clouds", "cows", "bread",
-                "spoons", "ovens", "socks", "naps", "grocery lists",
-            ],
-            k=4,
-        )
         energy = {
             0: "Normal human chat. Mild and coherent.",
             1: "Slightly odd, still friendly.",
@@ -14638,7 +14747,8 @@ class GamersChatHelper:
             f"Write ONE chat line at chaos level {level}/4 ({label}).\n"
             f"Energy: {energy}\n"
             "NOT about video games, LFG, loot, dungeons, or MMOs.\n"
-            f"Topic sparks (invent something new, do not list them): {', '.join(topic_sparks)}.\n"
+            "Follow the mandatory content recipe supplied below instead of returning to "
+            "familiar internet-random topics.\n"
             "Short. One line. Chat-safe weird, not hateful."
         )
 

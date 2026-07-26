@@ -9,8 +9,13 @@ from hyperline_generation import (
     closest_recent_line,
     line_similarity,
     normalize_variety,
+    procedural_noise_line,
+    procedural_recruit_line,
     random_seed,
+    recruit_creative_plan,
     retry_threshold,
+    select_diverse_lines,
+    semantic_diversity_threshold,
     structure_direction,
 )
 
@@ -68,6 +73,40 @@ class VarietyTests(unittest.TestCase):
         self.assertGreater(len(seeds), 1)
         self.assertTrue(all(1 <= seed <= 2_147_483_647 for seed in seeds))
 
+    def test_recruit_plans_do_not_repeat_across_a_long_session(self):
+        recent = []
+        prompts = []
+        for _ in range(100):
+            plan_id, prompt = recruit_creative_plan(recent)
+            recent.append(plan_id)
+            prompts.append(prompt)
+
+        self.assertEqual(len(set(recent)), 100)
+        self.assertTrue(all("underlying idea" in prompt for prompt in prompts))
+
+    def test_noise_plans_and_offline_lines_have_broad_cardinality(self):
+        recent = []
+        lines = []
+        for _ in range(100):
+            plan_id, line = procedural_noise_line(3, recent)
+            recent.append(plan_id)
+            lines.append(line)
+
+        self.assertEqual(len(set(recent)), 100)
+        self.assertGreaterEqual(len(set(lines)), 95)
+
+    def test_procedural_recruit_fallback_varies_content(self):
+        recent = []
+        lines = []
+        for _ in range(50):
+            plan_id, line = procedural_recruit_line("[Defiants]", recent)
+            recent.append(plan_id)
+            lines.append(line)
+
+        self.assertEqual(len(set(recent)), 50)
+        self.assertGreaterEqual(len(set(lines)), 45)
+        self.assertTrue(all("[Defiants]" in line for line in lines))
+
 
 class SimilarityTests(unittest.TestCase):
     def test_near_paraphrase_scores_higher_than_unrelated_line(self):
@@ -93,6 +132,27 @@ class SimilarityTests(unittest.TestCase):
         self.assertEqual(closest, recent[0])
         self.assertGreaterEqual(score, retry_threshold("Varied"))
         self.assertGreater(retry_threshold("Stable"), retry_threshold("Wild"))
+        self.assertLess(
+            semantic_diversity_threshold("Varied", "recruit"),
+            retry_threshold("Varied"),
+        )
+
+    def test_diverse_selection_compares_candidates_to_each_other(self):
+        candidates = [
+            "Need healer for Foaming Catacombs chill run",
+            "Need a healer for Foaming Catacombs — chill run",
+            "Social guild seeking returning players, PST for details",
+        ]
+
+        selected = select_diverse_lines(candidates, [], threshold=0.78)
+
+        self.assertEqual(
+            selected,
+            [
+                candidates[0],
+                candidates[2],
+            ],
+        )
 
 
 class LmStudioPayloadTests(unittest.TestCase):
@@ -138,6 +198,67 @@ class LmStudioPayloadTests(unittest.TestCase):
             "NOVELTY RETRY",
             second_payload["messages"][1]["content"],
         )
+
+    def test_multi_recruit_semantic_duplicates_trigger_new_content_plans(self):
+        app = object.__new__(GamersChatHelper)
+        app.api_url = "http://127.0.0.1:1234/v1/chat/completions"
+        app.lm_host = "127.0.0.1:1234"
+        app.history = []
+        app.variety_var = SimpleNamespace(get=lambda: "Varied")
+        app.limit = lambda: 180
+        app._selected_lm_model = lambda: "test-model"
+        app._llm_headers = lambda: {}
+        app.system_prompt = lambda job="recruit_fresh": "system"
+
+        responses = [
+            SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "1. Chill guild looking for active players, PST\n"
+                                    "2. Active players wanted for our chill guild, PST\n"
+                                    "3. Join our chill guild, active players PST"
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+            SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "1. New here? Find your regular crew with [Guild]\n"
+                                    "2. Done with random groups? [Guild] is building a core\n"
+                                    "3. Good people over roster size — ask about [Guild]"
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+        with mock.patch(
+            "gamers_chat_helper.requests.post",
+            side_effect=responses,
+        ) as post:
+            result = app.call_local_llm(
+                "Write three recruit lines",
+                n=3,
+                job="recruit_fresh",
+            )
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(len(result), 3)
+        retry_prompt = post.call_args_list[1].kwargs["json"]["messages"][1]["content"]
+        self.assertIn("SEMANTIC RESET", retry_prompt)
+        self.assertIn("DISTINCT CONTENT PLANS", retry_prompt)
 
 
 if __name__ == "__main__":

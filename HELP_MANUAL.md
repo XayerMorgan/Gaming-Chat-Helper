@@ -60,9 +60,9 @@ Intent chips show only the controls you need.
 
 **Variety controls chat wording only:**
 
-- **Stable** — closest to the original behavior; consistent and conservative.
-- **Varied** — recommended; rotates phrasing and structure and retries near-duplicates.
-- **Wild** — widest variation; an occasional line may need a quick edit.
+- **Stable** — steady sampling while still rotating high-level content angles.
+- **Varied** — recommended; new angles, phrasing, and structure plus semantic retries.
+- **Wild** — broadest concepts; an occasional line may need a quick edit.
 
 OCR and Economy stay accuracy-focused. Noise uses its separate **Chaos** control.
 
