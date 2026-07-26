@@ -25,6 +25,8 @@ import customtkinter as ctk
 import pyperclip
 import requests
 
+from hyperline_persistence import atomic_write_json, configure_diagnostics
+
 try:
     from PIL import Image, ImageGrab, ImageEnhance, ImageOps
     import base64
@@ -149,8 +151,10 @@ PROFILE_PACK_PATH = os.path.join(APP_DIR, "hyperline_profile.json")
 HELP_MANUAL_PATH = os.path.join(APP_DIR, "HELP_MANUAL.md")
 FEATURES_PATH = os.path.join(APP_DIR, "FEATURES.md")
 RECRUIT_TEMPLATES_PATH = os.path.join(APP_DIR, "recruit_templates.json")
+DIAGNOSTIC_LOG_PATH = os.path.join(APP_DIR, "hyperline.log")
 RECRUIT_PLACEHOLDER = "(type a guild pitch below)"
 MACROS_MAX = 3
+LOG = configure_diagnostics(DIAGNOSTIC_LOG_PATH)
 
 # ---------------------------------------------------------------------------
 # Context help (F1) — short per-tab blurbs; full manual is HELP_MANUAL.md
@@ -1981,7 +1985,10 @@ class GamersChatHelper:
                     self.time_alarms = cleaned_al[:40]
                 self.time_beep_enabled = bool(data.get("time_beep_enabled", True))
             except Exception:
-                pass
+                LOG.exception(
+                    "Could not load settings from %s; using safe defaults",
+                    CONFIG_PATH,
+                )
 
         # Fold legacy single-slot fields into per-game bags (one-time migration)
         self._migrate_legacy_into_game_settings()
@@ -2160,8 +2167,11 @@ class GamersChatHelper:
             "time_alarms": list(getattr(self, "time_alarms", []) or [])[:40],
             "time_beep_enabled": bool(getattr(self, "time_beep_enabled", True)),
         }
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+        try:
+            atomic_write_json(CONFIG_PATH, data, indent=4)
+        except Exception:
+            LOG.exception("Could not save settings to %s", CONFIG_PATH)
+            raise
 
     def _house_styles_for_save(self) -> dict[str, str]:
         styles = dict(getattr(self, "house_styles", None) or getattr(self, "saved_house_styles", {}) or {})
@@ -11296,11 +11306,16 @@ class GamersChatHelper:
             ],
         }
         try:
-            with open(RECRUIT_TEMPLATES_PATH, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
-                f.write("\n")
+            atomic_write_json(
+                RECRUIT_TEMPLATES_PATH,
+                payload,
+                indent=2,
+                ensure_ascii=False,
+                trailing_newline=True,
+            )
             return True
         except Exception as e:
+            LOG.exception("Could not save recruit templates to %s", RECRUIT_TEMPLATES_PATH)
             try:
                 messagebox.showerror("Recruit save failed", str(e))
             except Exception:
@@ -14666,11 +14681,11 @@ class GamersChatHelper:
             return
         try:
             data = self._build_profile_pack()
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(path, data, indent=2, ensure_ascii=False)
             self.show_toast("Profile exported", kind="ok")
             self.set_status(f"Profile → {os.path.basename(path)}")
         except Exception as e:
+            LOG.exception("Could not export profile pack to %s", path)
             self.show_toast(f"Export failed: {e}", kind="error")
 
     def import_profile_pack(self):
@@ -15149,14 +15164,18 @@ class GamersChatHelper:
 
 
 if __name__ == "__main__":
-    root = ctk.CTk()
-    app = GamersChatHelper(root)
+    app = None
     try:
+        root = ctk.CTk()
+        app = GamersChatHelper(root)
         root.mainloop()
+    except BaseException:
+        LOG.exception("Unhandled fatal error in Hyperline")
     finally:
         # Guarantee process + terminal session end if mainloop ends without on_close
         try:
-            app._alive = False
+            if app is not None:
+                app._alive = False
         except Exception:
             pass
         try:

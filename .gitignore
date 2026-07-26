@@ -15,6 +15,7 @@ steam_players_log.txt
 session_export.txt
 last_chat_capture.png
 last_market_capture.png
+hyperline.log*
 
 # OS / editor
 .DS_Store
