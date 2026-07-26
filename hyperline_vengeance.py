@@ -24,6 +24,10 @@ _PATTERNS = (
     rf"(?:you (?:(?:were|are|have been) )?(?:killed|slain|defeated|downed) by)\s+(?P<name>{_NAME})",
     rf"(?P<name>{_NAME})\s+(?:has )?(?:killed|slew|slain|defeated|downed)\s+you\b",
     rf"(?:killer|attacker)\s*[:=-]\s*(?P<name>{_NAME})",
+    rf"(?P<name>{_NAME}?)\s+(?:has\s+)?dealt\s+you\s+[\d,]+\s+(?:[a-z]+\s+)?damage\b",
+    rf"(?P<name>{_NAME}?)\s+(?:has\s+)?dealt\s+[\d,]+\s+(?:[a-z]+\s+)?damage\s+to\s+you\b",
+    rf"you\s+(?:have\s+)?dealt\s+[\d,]+\s+(?:[a-z]+\s+)?damage\s+to\s+(?P<name>{_NAME})",
+    rf"you\s+(?:have\s+)?dealt\s+(?P<name>{_NAME}?)\s+[\d,]+\s+(?:[a-z]+\s+)?damage\b",
 )
 _TRAILING_NOISE = re.compile(
     r"\s+(?:with|using|for|at|in|near|dealing|and dealt)\b.*$",
@@ -43,6 +47,7 @@ def extract_combat_targets(text: str) -> list[dict[str, str]]:
     seen: set[tuple[str, str]] = set()
     for raw_line in str(text or "").splitlines():
         line = re.sub(r"^\s*(?:\[\d{1,2}:\d{2}(?::\d{2})?\]|\d{1,2}:\d{2})\s*", "", raw_line)
+        line = re.sub(r"^\s*system\s*:\s*", "", line, flags=re.IGNORECASE)
         guild_match = _GUILD_TAG.search(line)
         guild = clean_target_name(guild_match.group("guild")) if guild_match else ""
         without_tag = _GUILD_TAG.sub(" ", line)
@@ -52,7 +57,11 @@ def extract_combat_targets(text: str) -> list[dict[str, str]]:
                 continue
             name = _TRAILING_NOISE.sub("", match.group("name"))
             name = clean_target_name(name)
-            if not name or name.lower() in {"you", "your", "unknown", "player"}:
+            if (
+                not name
+                or name.lower() in {"you", "your", "unknown", "player"}
+                or re.match(r"^(?:a|an|the)\s+", name, flags=re.IGNORECASE)
+            ):
                 continue
             key = (name.casefold(), guild.casefold())
             if key not in seen:

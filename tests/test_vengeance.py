@@ -34,6 +34,25 @@ class CombatTargetParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_extracts_incoming_and_outgoing_damage_targets(self):
+        text = "\n".join(
+            (
+                "System: Apep has dealt you 1140 magic damage",
+                "System: [Ashen Court] Veyra has dealt 2,050 physical damage to you",
+                "System: You have dealt Rook-Prime 875 physical damage",
+                "System: You dealt 640 magic damage to Lady Vex",
+            )
+        )
+        self.assertEqual(
+            extract_combat_targets(text),
+            [
+                {"name": "Apep", "guild": ""},
+                {"name": "Veyra", "guild": "Ashen Court"},
+                {"name": "Rook-Prime", "guild": ""},
+                {"name": "Lady Vex", "guild": ""},
+            ],
+        )
+
     def test_ignores_unrelated_lines_and_deduplicates(self):
         text = "\n".join(
             (
