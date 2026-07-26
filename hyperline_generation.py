@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import re
+from itertools import product
 from difflib import SequenceMatcher
 from typing import Mapping
 
@@ -218,15 +219,72 @@ def _choose_unseen_plan(
     prefix: str,
     parts: tuple[tuple[str, ...], ...],
     recent_ids: list[str] | None = None,
+    component_cooldowns: tuple[int, ...] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     recent = set(recent_ids or [])
+    recent_ordered = [
+        item.split("|")[1:]
+        for item in (recent_ids or [])
+        if item.startswith(prefix + "|")
+    ]
     rng = random.SystemRandom()
-    for _ in range(40):
-        chosen = tuple(rng.choice(options) for options in parts)
+    eligible_parts = []
+    for index, options in enumerate(parts):
+        cooldown = (
+            component_cooldowns[index]
+            if component_cooldowns and index < len(component_cooldowns)
+            else 0
+        )
+        blocked = {
+            prior[index]
+            for prior in recent_ordered[-cooldown:]
+            if cooldown > 0 and index < len(prior)
+        }
+        eligible = tuple(option for option in options if option not in blocked)
+        eligible_parts.append(eligible or options)
+
+    for _ in range(120):
+        chosen = tuple(rng.choice(options) for options in eligible_parts)
         plan_id = prefix + "|" + "|".join(chosen)
         if plan_id not in recent:
             return plan_id, chosen
-    chosen = tuple(rng.choice(options) for options in parts)
+    unseen = [
+        chosen
+        for chosen in product(*eligible_parts)
+        if prefix + "|" + "|".join(chosen) not in recent
+    ]
+    if unseen:
+        chosen = rng.choice(unseen)
+        return prefix + "|" + "|".join(chosen), chosen
+    primary_index = max(
+        range(len(parts)),
+        key=lambda index: (
+            component_cooldowns[index]
+            if component_cooldowns and index < len(component_cooldowns)
+            else 0
+        ),
+    )
+    primary_preserving_parts = tuple(
+        eligible_parts[index] if index == primary_index else options
+        for index, options in enumerate(parts)
+    )
+    unseen = [
+        chosen
+        for chosen in product(*primary_preserving_parts)
+        if prefix + "|" + "|".join(chosen) not in recent
+    ]
+    if unseen:
+        chosen = rng.choice(unseen)
+        return prefix + "|" + "|".join(chosen), chosen
+    unseen = [
+        chosen
+        for chosen in product(*parts)
+        if prefix + "|" + "|".join(chosen) not in recent
+    ]
+    if unseen:
+        chosen = rng.choice(unseen)
+        return prefix + "|" + "|".join(chosen), chosen
+    chosen = tuple(rng.choice(options) for options in eligible_parts)
     return prefix + "|" + "|".join(chosen), chosen
 
 
@@ -236,6 +294,7 @@ def recruit_creative_plan(recent_ids: list[str] | None = None) -> tuple[str, str
         "recruit",
         (_RECRUIT_HOOKS, _RECRUIT_ANGLES, _RECRUIT_RHYTHMS, _RECRUIT_CTAS),
         recent_ids,
+        component_cooldowns=(8, 11, 7, 5),
     )
     hook, angle, rhythm, cta = chosen
     return (
@@ -245,6 +304,11 @@ def recruit_creative_plan(recent_ids: list[str] | None = None) -> tuple[str, str
         f"- Primary angle: {angle}; use it only when consistent with supplied facts.\n"
         f"- Rhythm: {rhythm}.\n"
         f"- CTA placement: {cta}.\n"
+        "- Make the selected angle the dominant idea; do not substitute a generic guild pitch.\n"
+        "- Do not force audience + vibe + benefits + CTA into every line; omit what the plan "
+        "does not need.\n"
+        "- Unless explicitly supplied by the player, do NOT mention loot, gear, grind, raids, "
+        "LFG, XP, tanks/healers, teleports, buffs, Discord, or invented guild services.\n"
         "- Avoid the default formula 'we are recruiting active players for fun and progression'.",
     )
 
@@ -258,6 +322,7 @@ def procedural_recruit_line(
         "recruit-offline",
         (_RECRUIT_AUDIENCES, _RECRUIT_VIBES, _RECRUIT_OFFLINE_CTAS, _RECRUIT_RHYTHMS),
         recent_ids,
+        component_cooldowns=(7, 5, 4, 7),
     )
     audience, vibe, cta, rhythm = chosen
     tag = guild_tag.strip() or "[Guild]"
@@ -290,6 +355,7 @@ def noise_creative_plan(
         f"noise{max(0, min(4, int(level)))}",
         (_NOISE_SUBJECTS, _NOISE_RELATIONS, _NOISE_FORMS, _NOISE_TONES),
         recent_ids,
+        component_cooldowns=(30, 14, 10, 5),
     )
     subject, relation, form, tone = chosen
     return (

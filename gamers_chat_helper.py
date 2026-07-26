@@ -991,19 +991,19 @@ JOB_LLM = {
     "recruit": {
         "temperature": 0.60, "top_p": 0.88, "top_k": 40, "min_p": 0.05,
         "repeat_penalty": 1.05, "frequency_penalty": 0.10, "presence_penalty": 0.0,
-        "max_tokens": 90, "use_mood": False, "use_terms": True,
+        "max_tokens": 90, "use_mood": False, "use_terms": False,
     },
     # Completely new recruiting pitch from guild name + seed directive
     "recruit_fresh": {
         "temperature": 0.82, "top_p": 0.92, "top_k": 48, "min_p": 0.04,
         "repeat_penalty": 1.10, "frequency_penalty": 0.20, "presence_penalty": 0.10,
-        "max_tokens": 100, "use_mood": True, "use_terms": True,
+        "max_tokens": 100, "use_mood": True, "use_terms": False,
     },
     # Fresh wording of an existing pitch (higher novelty; same facts)
     "recruit_variant": {
         "temperature": 0.88, "top_p": 0.93, "top_k": 50, "min_p": 0.04,
         "repeat_penalty": 1.14, "frequency_penalty": 0.28, "presence_penalty": 0.12,
-        "max_tokens": 100, "use_mood": True, "use_terms": True,
+        "max_tokens": 100, "use_mood": True, "use_terms": False,
     },
     # Replies: cooler sampling = more human, less tryhard / superlative
     "comeback": {
@@ -12760,7 +12760,9 @@ class GamersChatHelper:
                 f"{seed_block}"
                 f"{dir_bit}"
                 f"{intensity}\n"
-                f"Include: who you want, vibe (chill/serious), how to apply (whisper / PST / Party Finder) if natural.\n"
+                f"Follow the mandatory creative plan appended by the generation layer.\n"
+                f"Use only the elements that plan needs; do not force audience, vibe, and application method into every line.\n"
+                f"Do NOT invent game activities, guild services, or benefits that were not supplied.\n"
                 f"Do NOT invent Discord-only requirements unless the seed asked for them.\n"
                 f"Do NOT sound like a corporate ad.\n"
                 f"MUST include the guild tag exactly as {tag} (square brackets required).\n"
@@ -12791,7 +12793,9 @@ class GamersChatHelper:
             f"{seed_block}"
             f"{dir_bit}"
             f"{intensity}\n"
-            f"Each line: who you want, vibe, how to apply (whisper / PST / Party Finder) if natural.\n"
+            f"Follow every mandatory creative plan appended by the generation layer.\n"
+            f"Use only the elements each plan needs; do not force audience, vibe, and application method into every line.\n"
+            f"Do NOT invent game activities, guild services, or benefits that were not supplied.\n"
             f"Do NOT invent Discord-only requirements unless the seed asked for them.\n"
             f"Do NOT sound like a corporate ad.\n"
             f"MUST include the guild tag exactly as {tag} (square brackets required) in EVERY line.\n"
@@ -13670,7 +13674,7 @@ class GamersChatHelper:
         )
         # Per-game vocabulary normalizer (DG=Dungeon, WB=World Boss, …)
         vocab_block = self.vocab_prompt_block(game)
-        if vocab_block:
+        if vocab_block and job not in {"recruit", "recruit_fresh", "recruit_variant"}:
             base += vocab_block
         house = self.house_style_for(game)
         if house:
@@ -13747,9 +13751,12 @@ class GamersChatHelper:
             "recruit_fresh": (
                 "JOB: invent a completely NEW guild/clan recruitment chat line.\n"
                 "No existing pitch to rewrite — form it from guild name + direction only.\n"
-                "Punchy, scannable, chat-native. Include who/vibe/how-to-apply when natural.\n"
+                "The MANDATORY CREATIVE PLAN in the user message controls the underlying appeal; "
+                "make that angle unmistakable instead of writing a generic recruit line.\n"
+                "Punchy, scannable, chat-native. Include only details that serve that plan.\n"
                 "If multiple numbered options are requested, make each distinctly different.\n"
-                "Do not invent Discord rules or benefits the user never asked for.\n"
+                "Do not invent activities, rewards, roles, Discord rules, or benefits the user "
+                "never supplied.\n"
             ),
             "recruit_variant": (
                 "JOB: rewrite an existing guild recruit pitch as a fresh VARIANT.\n"
@@ -13933,7 +13940,11 @@ class GamersChatHelper:
                 )
                 if response.status_code != 200:
                     return "", f"Error: HTTP {response.status_code}"
-                raw_text = response.json()["choices"][0]["message"]["content"].strip()
+                raw_text = (
+                    response.json()["choices"][0]["message"]["content"]
+                    .replace("\ufffd", "-")
+                    .strip()
+                )
                 return raw_text, None
             except Exception:
                 host = getattr(self, "lm_host", "") or LM_DEFAULT_LOCAL_HOST
@@ -13988,23 +13999,56 @@ class GamersChatHelper:
         )
         threshold = semantic_diversity_threshold(variety, family)
         closest, similarity = closest_recent_line(first, recent)
-        if closest and similarity >= threshold:
+        invented_terms = self._invented_recruit_terms(first, base_content) if family == "recruit" else []
+        if (closest and similarity >= threshold) or invented_terms:
+            retry_reason = (
+                "The first attempt invented unsupported content: "
+                + ", ".join(invented_terms)
+                + ". Remove it and use only supplied facts. "
+                if invented_terms
+                else "The first attempt was too similar to a recent line. "
+            )
             retry_content = (
                 content
-                + "\n\nNOVELTY RETRY: The first attempt was too similar to a recent line. "
-                "Change the opening, sentence rhythm, and wording. Do not reuse this line: "
-                + closest[:180]
+                + "\n\nNOVELTY RETRY: "
+                + retry_reason
+                + "Change the opening, underlying appeal, sentence rhythm, and wording. "
+                + ("Do not reuse this line: " + closest[:180] if closest else "")
             )
             retry_raw, retry_error = request_once(retry_content)
             if not retry_error:
                 retry_line = self._clean_line(retry_raw, lim)
                 _, retry_similarity = closest_recent_line(retry_line, recent)
-                if retry_line and retry_similarity < similarity:
+                retry_invented = (
+                    self._invented_recruit_terms(retry_line, base_content)
+                    if family == "recruit"
+                    else []
+                )
+                if retry_line and not retry_invented and (
+                    invented_terms or retry_similarity < similarity
+                ):
                     return [retry_line]
         return [first]
 
+    @staticmethod
+    def _invented_recruit_terms(line: str, supplied_prompt: str) -> list[str]:
+        """Flag concrete MMO claims that appear only in a generated recruit line."""
+        terms = (
+            "boss", "dungeon", "raid", "loot", "gear", "grind", "lfg", "xp",
+            "tank", "healer", "teleport", "buff", "discord",
+        )
+        output = (line or "").lower()
+        supplied = (supplied_prompt or "").lower()
+        return [
+            term
+            for term in terms
+            if re.search(rf"\b{re.escape(term)}(?:es|s)?\b", output)
+            and not re.search(rf"\b{re.escape(term)}(?:es|s)?\b", supplied)
+        ]
+
     def _clean_line(self, raw: str, lim: int) -> str:
         line = raw.strip().strip('"').strip("'")
+        line = line.translate({0xFFFD: "-"})
         for prefix in (
             "Chat:", "Message:", "Reply:", "Option:", "Output:",
             "As a player:", "Player:", "Line:",

@@ -83,6 +83,10 @@ class VarietyTests(unittest.TestCase):
 
         self.assertEqual(len(set(recent)), 100)
         self.assertTrue(all("underlying idea" in prompt for prompt in prompts))
+        angles = [plan_id.split("|")[2] for plan_id in recent]
+        self.assertTrue(
+            all(len(set(angles[i:i + 12])) == 12 for i in range(len(angles) - 11))
+        )
 
     def test_noise_plans_and_offline_lines_have_broad_cardinality(self):
         recent = []
@@ -94,6 +98,8 @@ class VarietyTests(unittest.TestCase):
 
         self.assertEqual(len(set(recent)), 100)
         self.assertGreaterEqual(len(set(lines)), 95)
+        subjects = [plan_id.split("|")[1] for plan_id in recent]
+        self.assertEqual(len(set(subjects[:30])), 30)
 
     def test_procedural_recruit_fallback_varies_content(self):
         recent = []
@@ -109,6 +115,21 @@ class VarietyTests(unittest.TestCase):
 
 
 class SimilarityTests(unittest.TestCase):
+    def test_clean_line_replaces_invalid_unicode_marker(self):
+        app = object.__new__(GamersChatHelper)
+        app.trim_to_limit = lambda line: line
+
+        self.assertEqual(app._clean_line("Guild open \ufffd PST", 100), "Guild open - PST")
+
+    def test_recruit_factuality_detects_only_unsupported_game_claims(self):
+        self.assertEqual(
+            GamersChatHelper._invented_recruit_terms(
+                "Join us for bosses, loot, and Discord",
+                "Write a guild line about boss runs",
+            ),
+            ["loot", "discord"],
+        )
+
     def test_near_paraphrase_scores_higher_than_unrelated_line(self):
         source = "LFG Foaming Catacombs need healer chill run"
         similar = "LFG Foaming Catacombs, need a healer for a chill run"
