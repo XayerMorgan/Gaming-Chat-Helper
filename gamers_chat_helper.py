@@ -1777,6 +1777,7 @@ class GamersChatHelper:
         self.saved_onboarding_done = False
         self.saved_ai_seed = ""
         self.saved_ai_seed_enabled = False
+        self.saved_ai_seed_height = 110
         # Per-game guild names for recruit AI — always expressed as [GUILD NAME]
         self.guild_names: dict[str, str] = {}
         # Time tab: per-game sites + alarms
@@ -1863,8 +1864,13 @@ class GamersChatHelper:
                 self.saved_generator_intent = gi if gi in INTENT_OPTIONS else "lfg"
                 self.saved_show_advanced = bool(data.get("show_advanced", False))
                 self.saved_onboarding_done = bool(data.get("onboarding_done", False))
-                self.saved_ai_seed = str(data.get("ai_seed", "") or "")[:240]
+                self.saved_ai_seed = str(data.get("ai_seed", "") or "")[:480]
                 self.saved_ai_seed_enabled = bool(data.get("ai_seed_enabled", False))
+                try:
+                    seed_height = int(data.get("ai_seed_height", 110) or 110)
+                except (TypeError, ValueError):
+                    seed_height = 110
+                self.saved_ai_seed_height = max(72, min(360, seed_height))
                 gn = data.get("guild_names") or {}
                 if isinstance(gn, dict):
                     self.guild_names = {
@@ -2094,14 +2100,16 @@ class GamersChatHelper:
             ),
             "onboarding_done": bool(getattr(self, "onboarding_done", False)),
             "ai_seed": (
-                (self.ai_seed_var.get() or "").strip()[:240]
-                if hasattr(self, "ai_seed_var")
-                else getattr(self, "saved_ai_seed", "")
-            ),
+                (self._get_ai_seed_box_text() if hasattr(self, "ai_seed_box") or hasattr(self, "ai_seed_var") else "")
+                or getattr(self, "saved_ai_seed", "")
+            )[:480],
             "ai_seed_enabled": bool(
                 self.ai_seed_enabled.get()
                 if hasattr(self, "ai_seed_enabled")
                 else getattr(self, "saved_ai_seed_enabled", False)
+            ),
+            "ai_seed_height": int(
+                getattr(self, "ai_seed_height", getattr(self, "saved_ai_seed_height", 110))
             ),
             "guild_names": self._guild_names_for_save(),
             "steam_log_enabled": bool(
@@ -2178,7 +2186,132 @@ class GamersChatHelper:
         styles = getattr(self, "house_styles", None) or getattr(self, "saved_house_styles", {}) or {}
         return str(styles.get(game, "") or "").strip()[:500]
 
+    def _ai_seed_max(self) -> int:
+        return 480
+
+    def _ai_seed_expand_label(self) -> str:
+        open_ = bool(getattr(self, "ai_seed_expanded", False))
+        on = bool(
+            self.ai_seed_enabled.get()
+            if hasattr(self, "ai_seed_enabled")
+            else False
+        )
+        chev = "▾" if open_ else "▸"
+        state = " · ON" if on else ""
+        return f"{chev}  SEED DIRECTIVE{state}  ·  optional multi-line"
+
+    def _toggle_ai_seed_expand(self):
+        self.ai_seed_expanded = not bool(getattr(self, "ai_seed_expanded", False))
+        self._sync_ai_seed_entry_state()
+
+    def _get_ai_seed_box_text(self) -> str:
+        """Read multi-line seed box (or StringVar fallback)."""
+        if hasattr(self, "ai_seed_box"):
+            try:
+                return (self.ai_seed_box.get("1.0", "end-1c") or "").strip()
+            except Exception:
+                try:
+                    return (self.ai_seed_box.get("0.0", "end-1c") or "").strip()
+                except Exception:
+                    pass
+        if hasattr(self, "ai_seed_var"):
+            return (self.ai_seed_var.get() or "").strip()
+        return str(getattr(self, "saved_ai_seed", "") or "").strip()
+
+    def _set_ai_seed_box_text(self, text: str):
+        text = (text or "")[: self._ai_seed_max()]
+        if hasattr(self, "ai_seed_box"):
+            try:
+                self.ai_seed_box.delete("1.0", "end")
+                if text:
+                    self.ai_seed_box.insert("1.0", text)
+            except Exception:
+                try:
+                    self.ai_seed_box.delete("0.0", "end")
+                    if text:
+                        self.ai_seed_box.insert("0.0", text)
+                except Exception:
+                    pass
+        if hasattr(self, "ai_seed_var"):
+            self.ai_seed_var.set(text)
+        self._update_ai_seed_count()
+
+    def _sync_ai_seed_from_box(self, save: bool = False):
+        """Pull textbox → StringVar (capped). Optionally persist."""
+        raw = self._get_ai_seed_box_text()
+        cap = self._ai_seed_max()
+        if len(raw) > cap:
+            raw = raw[:cap]
+            self._set_ai_seed_box_text(raw)
+        if hasattr(self, "ai_seed_var"):
+            self.ai_seed_var.set(raw)
+        self._update_ai_seed_count()
+        if save:
+            try:
+                self.save_settings()
+            except Exception:
+                pass
+
+    def _on_ai_seed_key(self, event=None):
+        raw = self._get_ai_seed_box_text()
+        cap = self._ai_seed_max()
+        if len(raw) > cap:
+            # Soft cap while typing (keep cursor near end)
+            self._set_ai_seed_box_text(raw[:cap])
+            raw = raw[:cap]
+        if hasattr(self, "ai_seed_var"):
+            self.ai_seed_var.set(raw)
+        self._update_ai_seed_count()
+        on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
+        self._set_write_glow(on and bool(raw))
+
+    def _start_ai_seed_resize(self, event):
+        """Remember the pointer and textbox height at the start of a drag."""
+        if not hasattr(self, "ai_seed_box"):
+            return
+        self._ai_seed_resize_y = int(event.y_root)
+        self._ai_seed_resize_height = int(self.ai_seed_box.winfo_height())
+
+    def _drag_ai_seed_resize(self, event):
+        """Resize the seed editor vertically while its handle is dragged."""
+        if (
+            getattr(self, "_ai_seed_resize_y", None) is None
+            or not hasattr(self, "ai_seed_box")
+        ):
+            return
+        delta = int(event.y_root) - self._ai_seed_resize_y
+        new_height = max(sz(72), min(sz(360), self._ai_seed_resize_height + delta))
+        self.ai_seed_height = int(new_height)
+        try:
+            self.ai_seed_box.configure(height=new_height)
+        except Exception:
+            pass
+
+    def _finish_ai_seed_resize(self, event=None):
+        """Persist the user's preferred seed editor height after a drag."""
+        if hasattr(self, "ai_seed_box"):
+            self.ai_seed_height = max(
+                sz(72), min(sz(360), int(self.ai_seed_box.winfo_height()))
+            )
+        self._ai_seed_resize_y = None
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _update_ai_seed_count(self):
+        if not hasattr(self, "ai_seed_count_lbl"):
+            return
+        n = len(self._get_ai_seed_box_text())
+        cap = self._ai_seed_max()
+        try:
+            col = C["danger"] if n >= cap else (C["warn"] if n >= int(cap * 0.85) else C["muted"])
+            self.ai_seed_count_lbl.configure(text=f"{n}/{cap}", text_color=col)
+        except Exception:
+            pass
+
     def clear_ai_seed(self):
+        self._set_ai_seed_box_text("")
         if hasattr(self, "ai_seed_var"):
             self.ai_seed_var.set("")
         self.save_settings()
@@ -2186,28 +2319,49 @@ class GamersChatHelper:
         self.show_toast("AI seed cleared", kind="info")
 
     def _on_ai_seed_enabled_changed(self):
+        on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
+        # Opening Use seed expands the box so you can edit immediately
+        if on:
+            self.ai_seed_expanded = True
         self._sync_ai_seed_entry_state()
         self.save_settings()
-        on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
-        self._set_write_glow(on)
+        self._set_write_glow(on and bool(self._get_ai_seed_box_text()))
         self.show_toast("AI seed ON" if on else "AI seed OFF", kind="ok" if on else "info")
 
     def _sync_ai_seed_entry_state(self):
-        """Show seed field only when Use seed is ON (cuts vertical clutter)."""
+        """Show/hide expandable seed body; style from Use seed + expand state."""
         on = bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False
+        expanded = bool(getattr(self, "ai_seed_expanded", False))
+        if hasattr(self, "ai_seed_expand_btn"):
+            try:
+                self.ai_seed_expand_btn.configure(
+                    text=self._ai_seed_expand_label(),
+                    text_color=C["success"] if on else C["muted"],
+                )
+            except Exception:
+                pass
         if hasattr(self, "ai_seed_row"):
             try:
-                if on:
+                if expanded:
                     if not self.ai_seed_row.winfo_ismapped():
-                        self.ai_seed_row.pack(fill="x", padx=pad(14), pady=(0, pad(10)))
+                        self.ai_seed_row.pack(fill="x", padx=0, pady=(0, pad(2)))
                 else:
                     self.ai_seed_row.pack_forget()
             except Exception:
                 pass
-        if hasattr(self, "ai_seed_entry"):
+        # Keep the user's chosen editor height when toggling or expanding.
+        if hasattr(self, "ai_seed_box"):
             try:
-                self.ai_seed_entry.configure(
-                    text_color=C["text"] if on else C["muted"],
+                h = int(
+                    getattr(
+                        self,
+                        "ai_seed_height",
+                        getattr(self, "saved_ai_seed_height", 110),
+                    )
+                )
+                self.ai_seed_box.configure(
+                    height=h,
+                    text_color=C["text"],
                     border_color=C["accent"] if on else C["line"],
                 )
             except Exception:
@@ -2216,6 +2370,13 @@ class GamersChatHelper:
             try:
                 self.ai_seed_enabled_cb.configure(
                     text_color=C["success"] if on else C["muted"],
+                )
+            except Exception:
+                pass
+        if hasattr(self, "ai_seed_card"):
+            try:
+                self.ai_seed_card.configure(
+                    border_color=C["accent"] if on else C["line"],
                 )
             except Exception:
                 pass
@@ -2233,9 +2394,13 @@ class GamersChatHelper:
                 return ""
         elif not getattr(self, "saved_ai_seed_enabled", False):
             return ""
+        # Prefer live multi-line box
+        raw = self._get_ai_seed_box_text()
+        if raw:
+            return raw[: self._ai_seed_max()]
         if hasattr(self, "ai_seed_var"):
-            return (self.ai_seed_var.get() or "").strip()[:240]
-        return str(getattr(self, "saved_ai_seed", "") or "").strip()[:240]
+            return (self.ai_seed_var.get() or "").strip()[: self._ai_seed_max()]
+        return str(getattr(self, "saved_ai_seed", "") or "").strip()[: self._ai_seed_max()]
 
     def _ai_seed_prompt_block(self, *, strict: bool = False) -> str:
         """
@@ -2632,9 +2797,29 @@ class GamersChatHelper:
             pass
 
     def on_close(self):
-        """Hard exit — destroy UI and kill process so console/pythonw sessions don't stack."""
+        """
+        Hard exit — destroy UI and kill the Python process completely.
+        Required so closing the window does not leave stacked python/terminal sessions.
+        """
         self._alive = False
-        # Cancel pending after() jobs when possible
+        # Drop modal pickers so they don't keep the process warm
+        for attr in ("_recruit_pick_win", "_help_win"):
+            win = getattr(self, attr, None)
+            if win is not None:
+                try:
+                    if win.winfo_exists():
+                        try:
+                            win.grab_release()
+                        except Exception:
+                            pass
+                        win.destroy()
+                except Exception:
+                    pass
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        # Cancel known after() jobs when possible
         try:
             for job in (
                 getattr(self, "_toast_job", None),
@@ -2659,13 +2844,15 @@ class GamersChatHelper:
             self.root.destroy()
         except Exception:
             pass
-        # Ensure the process dies (pythonw / leftover consoles stack otherwise)
+        # Force-kill process (daemon threads + console sessions must not stack)
+        # os._exit skips atexit/finally cleanup on purpose — process must die now.
         try:
-            sys.exit(0)
-        except SystemExit:
             os._exit(0)
         except Exception:
-            os._exit(0)
+            try:
+                sys.exit(0)
+            except Exception:
+                pass
 
     def _on_configure(self, event=None):
         if event and event.widget is not self.root:
@@ -4493,7 +4680,7 @@ class GamersChatHelper:
         self.intent_seg = None
         self._refresh_intent_icons()
 
-        # SEED DIRECTIVE — demoted band (not equal weight to Your Line)
+        # SEED DIRECTIVE — expandable multi-line box (collapsed by default)
         seed_card = ctk.CTkFrame(
             tab, fg_color=C["surface"], corner_radius=10,
             border_width=1, border_color=C["line"],
@@ -4501,14 +4688,32 @@ class GamersChatHelper:
         seed_card.pack(fill="x", padx=pad(10), pady=(0, pad(4)))
         self.ai_seed_card = seed_card
         seed_head = ctk.CTkFrame(seed_card, fg_color="transparent")
-        seed_head.pack(fill="x", padx=pad(12), pady=(pad(6), pad(4)))
-        ctk.CTkLabel(
-            seed_head, text="SEED DIRECTIVE", font=f_ui(11, "bold"), text_color=C["muted"],
-        ).pack(side="left")
-        ctk.CTkLabel(
-            seed_head, text="optional · only when Use seed is on",
-            font=f_ui(11), text_color=C["muted"],
-        ).pack(side="left", padx=(pad(8), 0))
+        seed_head.pack(fill="x", padx=pad(10), pady=(pad(4), pad(4)))
+
+        # Start expanded if Use seed is on or saved text exists
+        seed0 = str(getattr(self, "saved_ai_seed", "") or "").strip()
+        use0 = bool(getattr(self, "saved_ai_seed_enabled", False))
+        if not hasattr(self, "ai_seed_expanded"):
+            self.ai_seed_expanded = bool(use0 or seed0)
+
+        self.ai_seed_expand_btn = ctk.CTkButton(
+            seed_head,
+            text=self._ai_seed_expand_label(),
+            height=sz(28),
+            font=f_ui(11, "bold"),
+            fg_color="transparent",
+            hover_color=C["hover"],
+            text_color=C["muted"],
+            anchor="w",
+            command=self._toggle_ai_seed_expand,
+        )
+        self.ai_seed_expand_btn.pack(side="left", fill="x", expand=True)
+        tip(
+            self.ai_seed_expand_btn,
+            "Expand / collapse the multi-line seed box.\n"
+            "Turn on Use seed for AI to apply this direction.",
+        )
+
         self.ai_seed_enabled_cb = ctk.CTkCheckBox(
             seed_head,
             text="Use seed",
@@ -4522,44 +4727,89 @@ class GamersChatHelper:
             checkbox_width=sz(18),
             checkbox_height=sz(18),
         )
-        self.ai_seed_enabled_cb.pack(side="right")
+        self.ai_seed_enabled_cb.pack(side="right", padx=(pad(6), 0))
         tip(
             self.ai_seed_enabled_cb,
             "When ON, the seed text is passed into chat AI (LFG / Activity / Reply / Recruit).\n"
-            "When OFF, the field hides and is ignored.",
+            "When OFF, the text is kept but ignored by AI.",
         )
+
+        # Expandable body: multi-line text box + Clear
         self.ai_seed_row = ctk.CTkFrame(seed_card, fg_color="transparent")
-        self.ai_seed_entry = ctk.CTkEntry(
-            self.ai_seed_row,
-            textvariable=self.ai_seed_var,
-            height=sz(34),
+        box_wrap = ctk.CTkFrame(self.ai_seed_row, fg_color="transparent")
+        box_wrap.pack(fill="x", padx=pad(10), pady=(0, pad(4)))
+        self.ai_seed_height = int(getattr(self, "saved_ai_seed_height", 110))
+
+        self.ai_seed_box = ctk.CTkTextbox(
+            box_wrap,
+            height=self.ai_seed_height,
             font=f_ui(13),
-            fg_color=C["surface"],
+            fg_color=C["elevated"],
+            text_color=C["text"],
             border_width=1,
             border_color=C["line"],
-            placeholder_text=(
-                "Optional vibe for AI: chill · mention no Discord · shorter · "
-                "include buffs · sound casual…"
-            ),
+            corner_radius=8,
+            wrap="word",
         )
-        self.ai_seed_entry.pack(side="left", fill="x", expand=True, padx=(0, pad(6)))
-        self.ai_seed_entry.bind("<FocusOut>", lambda e: self.save_settings())
-        self.ai_seed_entry.bind("<Return>", lambda e: self.save_settings())
-        self.ai_seed_entry.bind(
-            "<KeyRelease>",
-            lambda e: self._set_write_glow(bool(self.ai_seed_enabled.get()) if hasattr(self, "ai_seed_enabled") else False),
-        )
+        self.ai_seed_box.pack(fill="x", expand=True)
+        # Keep legacy name for any older hooks
+        self.ai_seed_entry = self.ai_seed_box
+        # Load saved seed into the multi-line box
+        try:
+            self.ai_seed_box.delete("1.0", "end")
+            if seed0:
+                self.ai_seed_box.insert("1.0", seed0[:480])
+            elif hasattr(self, "ai_seed_var"):
+                v = (self.ai_seed_var.get() or "").strip()
+                if v:
+                    self.ai_seed_box.insert("1.0", v[:480])
+        except Exception:
+            pass
+        self.ai_seed_box.bind("<FocusOut>", lambda e: self._sync_ai_seed_from_box(save=True))
+        self.ai_seed_box.bind("<KeyRelease>", lambda e: self._on_ai_seed_key())
         tip(
-            self.ai_seed_entry,
-            "Shared AI seed for LFG, Activity, Reply (clap-back), and Recruit.\n"
-            "Loose direction only — not copied word-for-word into the line.\n"
+            self.ai_seed_box,
+            "Multi-line AI seed for LFG, Activity, Reply, and Recruit.\n"
+            "Loose direction only — not copied word-for-word.\n"
             "Must turn ON “Use seed” for this to apply.",
         )
+
+        self.ai_seed_resize_handle = ctk.CTkLabel(
+            box_wrap,
+            text="⋮⋮  drag to resize  ⋮⋮",
+            height=sz(18),
+            font=f_ui(10),
+            text_color=C["muted"],
+            fg_color="transparent",
+            cursor="sb_v_double_arrow",
+        )
+        self.ai_seed_resize_handle.pack(fill="x", pady=(pad(2), 0))
+        self.ai_seed_resize_handle.bind("<ButtonPress-1>", self._start_ai_seed_resize)
+        self.ai_seed_resize_handle.bind("<B1-Motion>", self._drag_ai_seed_resize)
+        self.ai_seed_resize_handle.bind("<ButtonRelease-1>", self._finish_ai_seed_resize)
+        tip(self.ai_seed_resize_handle, "Drag up or down to resize the Seed Directive editor.")
+
+        seed_tools = ctk.CTkFrame(self.ai_seed_row, fg_color="transparent")
+        seed_tools.pack(fill="x", padx=pad(10), pady=(0, pad(8)))
+        self.ai_seed_count_lbl = ctk.CTkLabel(
+            seed_tools,
+            text="0/480",
+            font=f_ui(11),
+            text_color=C["muted"],
+        )
+        self.ai_seed_count_lbl.pack(side="left")
+        ctk.CTkLabel(
+            seed_tools,
+            text="optional vibe · chill · no Discord · shorter…",
+            font=f_ui(11),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(pad(10), 0))
         ctk.CTkButton(
-            self.ai_seed_row, text="Clear", width=sz(64), height=sz(34), font=f_ui(12),
-            fg_color=C["surface"], hover_color=C["hover"], border_width=1, border_color=C["line"],
+            seed_tools, text="Clear", width=sz(64), height=sz(28), font=f_ui(12),
+            fg_color=C["elevated"], hover_color=C["hover"], border_width=1, border_color=C["line"],
             command=self.clear_ai_seed,
         ).pack(side="right")
+        self._update_ai_seed_count()
         self._sync_ai_seed_entry_state()
 
         self.intent_host = ctk.CTkFrame(tab, fg_color="transparent")
@@ -7966,13 +8216,20 @@ class GamersChatHelper:
     def _quit_for_restart(self):
         self._alive = False
         try:
+            self.root.quit()
+        except Exception:
+            pass
+        try:
             self.root.destroy()
         except Exception:
             pass
         try:
-            sys.exit(0)
-        except SystemExit:
             os._exit(0)
+        except Exception:
+            try:
+                sys.exit(0)
+            except Exception:
+                pass
 
     def get_gen_text(self) -> str:
         """Primary generated line (from editor)."""
@@ -7987,12 +8244,26 @@ class GamersChatHelper:
         """Write into Your Line (single canvas; recruit pitch lives here too)."""
         text = (text or "").strip()
         if hasattr(self, "gen_editor"):
-            try:
-                self.gen_editor.delete("1.0", tk.END)
-                if text:
-                    self.gen_editor.insert("1.0", text)
-            except Exception:
-                pass
+            wrote = False
+            for start, end in (("1.0", "end"), ("1.0", tk.END), ("0.0", "end")):
+                try:
+                    self.gen_editor.delete(start, end)
+                    if text:
+                        self.gen_editor.insert(start, text)
+                    wrote = True
+                    break
+                except Exception:
+                    continue
+            # Fallback: raw tk.Text inside CTkTextbox
+            if not wrote or (text and self.get_gen_text() != text):
+                try:
+                    tb = getattr(self.gen_editor, "_textbox", None)
+                    if tb is not None:
+                        tb.delete("1.0", "end")
+                        if text:
+                            tb.insert("1.0", text)
+                except Exception:
+                    pass
         self._update_quick_out_meter()
         if text and not self._is_err(text):
             self._last_good_line = text
@@ -11903,12 +12174,19 @@ class GamersChatHelper:
             )
             txt.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
 
-            # Click anywhere on row (except checkbox) selects for Your Line
-            for w in (fr, top, badge, txt):
+            # Click selects; double-click uses immediately
+            def _bind_row(w, idx=i):
                 try:
-                    w.bind("<Button-1>", lambda _e, idx=i: _select_row(idx))
+                    w.bind("<Button-1>", lambda _e, j=idx: _select_row(j))
+                    w.bind(
+                        "<Double-Button-1>",
+                        lambda _e, j=idx: (selected_idx.set(j), use_selected()),
+                    )
                 except Exception:
                     pass
+
+            for w in (fr, top, badge, txt):
+                _bind_row(w)
 
         foot = ctk.CTkFrame(win, fg_color="transparent")
         foot.pack(fill="x", padx=pad(12), pady=(pad(4), pad(12)))
@@ -11925,19 +12203,27 @@ class GamersChatHelper:
             if getattr(self, "_recruit_pick_win", None) is win:
                 self._recruit_pick_win = None
 
-        def use_selected():
+        def use_selected(_event=None):
+            """Close picker first, then write into Your Line (grab blocks parent edits)."""
             idx = int(selected_idx.get())
             if not (0 <= idx < len(lines)):
                 return
-            line = lines[idx]
-            self._last_gen_mode = "recruit_fresh"
-            self._apply_recruit_result(line, save_as_new=False)
-            self.show_toast("In Your Line — ready to copy", kind="ok")
+            line = (lines[idx] or "").strip()
+            if not line:
+                self.show_toast("That option is empty", kind="warn")
+                return
             close()
+            # Must run AFTER grab is released — CTkTextbox on parent can fail while grabbed
+            def _apply():
+                self._apply_picked_recruit(line)
+            try:
+                self.root.after(20, _apply)
+            except Exception:
+                _apply()
 
         def star_checked():
             chosen = [
-                lines[i]
+                (lines[i] or "").strip()
                 for i, v in enumerate(fav_vars)
                 if v.get() and 0 <= i < len(lines)
             ]
@@ -11945,33 +12231,42 @@ class GamersChatHelper:
             if not chosen:
                 idx = int(selected_idx.get())
                 if 0 <= idx < len(lines):
-                    chosen = [lines[idx]]
+                    chosen = [(lines[idx] or "").strip()]
+            chosen = [c for c in chosen if c]
             if not chosen:
                 self.show_toast("Nothing to star", kind="warn")
                 return
-            added = 0
-            for line in chosen:
-                text = (line or "").strip()
-                if not text:
-                    continue
-                if text in self.favorites:
-                    # Move to front if already starred
-                    self.favorites.remove(text)
-                self.favorites.insert(0, text)
-                added += 1
-            self.favorites = self.favorites[:30]
-            self.rebuild_quick_buttons()
-            self.refresh_history_ui()
-            self.save_settings()
-            if added == 1:
+            n = self._star_recruit_lines(chosen)
+            if n == 1:
                 self.show_toast("Starred 1 line", kind="ok")
-            else:
-                self.show_toast(f"Starred {added} lines", kind="ok")
+            elif n > 1:
+                self.show_toast(f"Starred {n} lines", kind="ok")
 
         def use_and_star():
             # Star checked (or selected), then put selected into Your Line
-            star_checked()
-            use_selected()
+            idx = int(selected_idx.get())
+            if not (0 <= idx < len(lines)):
+                return
+            line = (lines[idx] or "").strip()
+            chosen = [
+                (lines[i] or "").strip()
+                for i, v in enumerate(fav_vars)
+                if v.get() and 0 <= i < len(lines)
+            ]
+            if not chosen and line:
+                chosen = [line]
+            chosen = [c for c in chosen if c]
+            close()
+
+            def _apply():
+                if chosen:
+                    self._star_recruit_lines(chosen)
+                self._apply_picked_recruit(line, also_star=None)
+
+            try:
+                self.root.after(20, _apply)
+            except Exception:
+                _apply()
 
         ctk.CTkButton(
             foot,
@@ -12018,6 +12313,13 @@ class GamersChatHelper:
             command=close,
         ).pack(side="left")
 
+        # Double-click a row also uses it
+        for i, fr in enumerate(row_frames):
+            try:
+                fr.bind("<Double-Button-1>", lambda _e, idx=i: (selected_idx.set(idx), use_selected()))
+            except Exception:
+                pass
+
         win.protocol("WM_DELETE_WINDOW", close)
         try:
             win.bind("<Escape>", lambda _e: close())
@@ -12028,6 +12330,119 @@ class GamersChatHelper:
             win.focus_force()
         except Exception:
             pass
+
+    def _star_recruit_lines(self, lines: list[str]) -> int:
+        """Add one or more lines to favorites. Returns how many were added/moved."""
+        added = 0
+        for line in lines or []:
+            text = (line or "").strip()
+            if not text:
+                continue
+            if text in self.favorites:
+                self.favorites.remove(text)
+            self.favorites.insert(0, text)
+            added += 1
+        if added:
+            self.favorites = self.favorites[:30]
+            try:
+                self.rebuild_quick_buttons()
+                self.refresh_history_ui()
+                self.save_settings()
+            except Exception:
+                pass
+        return added
+
+    def _apply_picked_recruit(self, line: str, also_star: Optional[list] = None):
+        """
+        Put a multiples-picker line into Your Line after the popup closes.
+        Bypasses modal-grab issues and avoids re-cleaning already-good lines.
+        """
+        line = (line or "").strip()
+        if not line:
+            self.show_toast("Empty recruit line", kind="warn")
+            return
+        if also_star:
+            self._star_recruit_lines([str(x) for x in also_star if str(x).strip()])
+        # Light polish only — lines from the picker are already cleaned
+        try:
+            line = self._ensure_guild_brackets(line)
+        except Exception:
+            pass
+        line = (line or "").strip()
+        if not line:
+            self.show_toast("Could not apply recruit line", kind="error")
+            return
+
+        self._last_gen_mode = "recruit_fresh"
+        # Stay on Recruit so Your Line is the active canvas
+        try:
+            if hasattr(self, "generator_intent"):
+                cur = (self.generator_intent.get() or "").strip()
+                if cur != "recruit":
+                    self.set_intent("recruit")
+        except Exception:
+            pass
+
+        self.set_gen_text(line, also_ai=True, also_hud=True)
+        # Hard verify — if CTk wrapper ate the write, hit the underlying text widget
+        got = self.get_gen_text()
+        if got != line and hasattr(self, "gen_editor"):
+            try:
+                tb = getattr(self.gen_editor, "_textbox", None)
+                if tb is not None:
+                    tb.delete("1.0", "end")
+                    tb.insert("1.0", line)
+                else:
+                    self.gen_editor.delete("1.0", tk.END)
+                    self.gen_editor.insert("1.0", line)
+            except Exception:
+                try:
+                    self.gen_editor.delete("0.0", "end")
+                    self.gen_editor.insert("0.0", line)
+                except Exception:
+                    pass
+        try:
+            self._update_quick_out_meter()
+            self.update_counter()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "gen_editor"):
+                self.gen_editor.focus_set()
+                self.gen_editor.see("1.0")
+        except Exception:
+            pass
+        # Flash Your Line so the update is obvious
+        try:
+            card = getattr(self, "editor_card", None)
+            if card is not None:
+                card.configure(
+                    border_color=C.get("primary", C["success"]),
+                    border_width=2,
+                )
+                self.root.after(
+                    900,
+                    lambda: card.configure(border_color=C["accent"], border_width=1)
+                    if card.winfo_exists()
+                    else None,
+                )
+        except Exception:
+            pass
+
+        if hasattr(self, "auto_copy") and self.auto_copy.get():
+            try:
+                self.safe_copy(line)
+            except Exception:
+                self.push_history(line, count=False)
+        else:
+            self.push_history(line, count=False)
+
+        self._recruit_mark_dirty("AI rewrite not saved — press Save to keep")
+        if self.get_gen_text():
+            self.show_toast("In Your Line — ready to copy", kind="ok")
+            self.set_status("Recruit in Your Line — Save * to keep")
+        else:
+            self.show_toast("Failed to write Your Line — try again", kind="error")
 
     def generate_recruit_variant(self, n: int = 1, save_as_new: bool = False):
         """
@@ -14739,14 +15154,15 @@ if __name__ == "__main__":
     try:
         root.mainloop()
     finally:
-        # Guarantee process exit if mainloop ends without on_close (stacked consoles)
+        # Guarantee process + terminal session end if mainloop ends without on_close
         try:
             app._alive = False
         except Exception:
             pass
         try:
-            sys.exit(0)
-        except SystemExit:
             os._exit(0)
         except Exception:
-            os._exit(0)
+            try:
+                sys.exit(0)
+            except Exception:
+                pass
