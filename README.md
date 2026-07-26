@@ -64,6 +64,16 @@ python -m pip install -r requirements.txt
 Start Hyperline.bat
 ```
 
+For the custom Hyperline launcher icon, use **`Start Hyperline.lnk`** instead of
+the raw batch file. Recreate it beside the batch file at any time with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\Create Hyperline Shortcut.ps1"
+```
+
+Add `-Desktop` to place the shortcut on your Windows desktop. Windows does not
+support assigning a custom icon directly to a `.bat` file.
+
 Or:
 
 ```bat

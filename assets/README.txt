@@ -8,6 +8,7 @@ Required / used automatically
 logo.png              Main brand mark (also used for window icon if app.ico missing)
 logo_sm.png           Optional small header logo (falls back to logo.png)
 app.ico               Windows taskbar / window icon
+hyperline_icon.png    Transparent master art used to build app.ico
 banner.png            Optional wide art under the header on Quick tab
                       (hide by deleting this file or set show_banner false in config)
 

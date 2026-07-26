@@ -16,6 +16,7 @@ session_export.txt
 last_chat_capture.png
 last_market_capture.png
 hyperline.log*
+Start Hyperline.lnk
 
 # OS / editor
 .DS_Store
@@ -23,6 +24,7 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+work/
 
 # Node (docx tooling)
 node_modules/

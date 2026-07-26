@@ -81,6 +81,18 @@ def _try_find_tesseract() -> Optional[str]:
     return None
 
 
+def _set_windows_app_identity() -> None:
+    """Keep the interpreted app from inheriting Python's taskbar identity."""
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            f"HyperlineAI.Desktop.{APP_VERSION}"
+        )
+    except Exception:
+        pass
+
+
 if _HAS_TESS:
     _tess = _try_find_tesseract()
     if _tess:
@@ -15282,6 +15294,7 @@ class GamersChatHelper:
 if __name__ == "__main__":
     app = None
     try:
+        _set_windows_app_identity()
         root = ctk.CTk()
         app = GamersChatHelper(root)
         root.mainloop()
