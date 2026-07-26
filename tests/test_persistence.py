@@ -61,17 +61,24 @@ class DiagnosticsTests(unittest.TestCase):
 
             first = configure_diagnostics(path)
             second = configure_diagnostics(path)
-            first.warning("diagnostic test")
-            for handler in first.handlers:
-                handler.flush()
+            matching = [
+                handler
+                for handler in first.handlers
+                if os.path.abspath(getattr(handler, "baseFilename", "")) == path
+            ]
+            try:
+                first.warning("diagnostic test")
+                for handler in matching:
+                    handler.flush()
 
-            self.assertIs(first, second)
-            self.assertEqual(len(first.handlers), 1)
-            with open(path, "r", encoding="utf-8") as stream:
-                self.assertIn("diagnostic test", stream.read())
-            for handler in list(first.handlers):
-                handler.close()
-                first.removeHandler(handler)
+                self.assertIs(first, second)
+                self.assertEqual(len(matching), 1)
+                with open(path, "r", encoding="utf-8") as stream:
+                    self.assertIn("diagnostic test", stream.read())
+            finally:
+                for handler in matching:
+                    handler.close()
+                    first.removeHandler(handler)
 
 
 if __name__ == "__main__":

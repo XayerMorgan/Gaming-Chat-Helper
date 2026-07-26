@@ -180,6 +180,7 @@ If the model thrashing/disk-swaps: lower context, use a smaller quant, or fewer 
 | Area | How to tune |
 |------|-------------|
 | **Tone** | Advanced Tweaks → Mood + Heat |
+| **Repeated chat wording** | Advanced Tweaks → Variety (`Varied` recommended; `Wild` is more experimental) |
 | **LFG content** | Content / Location / Party Finder / Need |
 | **House style** | Setup → per-game notes (guild name, never-say list) |
 | **Noise chaos** | Noise slider (Sane → Mental) |

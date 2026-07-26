@@ -56,7 +56,16 @@ Intent chips show only the controls you need.
 | **Recruit** | Guild pitch templates, fit to limit, Copy |
 | **Noise** | Non-game chaos (slider) + clean **Dad joke** |
 
-**Advanced Tweaks:** Mood, Heat (spiciness), LFG Need, “Grab chat: last line only”.  
+**Advanced Tweaks:** Mood, Heat (spiciness), Variety, LFG Need, “Grab chat: last line only”.
+
+**Variety controls chat wording only:**
+
+- **Stable** — closest to the original behavior; consistent and conservative.
+- **Varied** — recommended; rotates phrasing and structure and retries near-duplicates.
+- **Wild** — widest variation; an occasional line may need a quick edit.
+
+OCR and Economy stay accuracy-focused. Noise uses its separate **Chaos** control.
+
 **Generated line:** edit freely, **Copy / Fav / Trim**, refine (Shorter / Safer / Spicier / Another).
 
 #### Chat OCR (Reply)

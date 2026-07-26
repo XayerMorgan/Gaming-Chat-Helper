@@ -25,6 +25,16 @@ import customtkinter as ctk
 import pyperclip
 import requests
 
+from hyperline_generation import (
+    VARIETY_DESCRIPTIONS,
+    VARIETY_OPTIONS,
+    apply_variety,
+    closest_recent_line,
+    normalize_variety,
+    random_seed,
+    retry_threshold,
+    structure_direction,
+)
 from hyperline_persistence import atomic_write_json, configure_diagnostics
 
 try:
@@ -164,7 +174,7 @@ HELP_CONTEXT = {
         "CHAT GENERATOR\n\n"
         "Write the right line under the game’s character limit, then Copy and paste in-game.\n\n"
         "• Intents: LFG · Activity · Reply · Recruit · Noise\n"
-        "• Advanced Tweaks: Mood, Heat, LFG Need\n"
+        "• Advanced Tweaks: Mood, Heat, Variety, LFG Need\n"
         "• Reply: Set chat box → Grab chat (OCR) → Write clap-back\n"
         "• F6 = Write current intent · F7 = Copy (if Keys is on)\n"
         "• AI · on needs LM Studio local server; offline packs still work if AI is off\n\n"
@@ -1606,6 +1616,9 @@ class GamersChatHelper:
         self.activity_var = tk.StringVar(value=self.saved_activity)
         self.intensity_var = tk.IntVar(value=self.saved_intensity)
         self.noise_level_var = tk.IntVar(value=int(getattr(self, "saved_noise_level", 3)))
+        self.variety_var = tk.StringVar(
+            value=normalize_variety(getattr(self, "saved_variety", "Varied"))
+        )
         self.always_on_top = tk.BooleanVar(value=self.saved_on_top)
         self.auto_copy = tk.BooleanVar(value=self.saved_auto_copy)
         self.hud_mode = tk.BooleanVar(value=self.saved_hud)
@@ -1757,6 +1770,7 @@ class GamersChatHelper:
         self.saved_activity = "General Chat"
         self.saved_intensity = 1
         self.saved_noise_level = 3
+        self.saved_variety = "Varied"
         self.saved_show_banner = True
         self.saved_font_scale = "M"
         self.saved_steam_log_enabled = True
@@ -1844,6 +1858,9 @@ class GamersChatHelper:
                 except Exception:
                     nl = 3
                 self.saved_noise_level = max(0, min(4, nl))
+                self.saved_variety = normalize_variety(
+                    str(data.get("variety", "Varied") or "Varied")
+                )
                 self.saved_show_banner = bool(data.get("show_banner", True))
                 fs = data.get("font_scale", "M")
                 fs = TYPE_SCALE_LEGACY.get(fs, fs)
@@ -2057,6 +2074,11 @@ class GamersChatHelper:
                 self.noise_level_var.get()
                 if hasattr(self, "noise_level_var")
                 else getattr(self, "saved_noise_level", 3)
+            ),
+            "variety": normalize_variety(
+                self.variety_var.get()
+                if hasattr(self, "variety_var")
+                else getattr(self, "saved_variety", "Varied")
             ),
             "show_banner": bool(getattr(self, "show_banner", True)),
             "font_scale": getattr(self, "font_scale_key", type_scale_key()),
@@ -4462,7 +4484,7 @@ class GamersChatHelper:
             (getattr(self, "noise_slider", None),
              "Chaos intensity for Noise only: Sane → Mental.\nDoes not affect Dad jokes (always clean)."),
             (getattr(self, "adv_toggle_btn", None),
-             "Show or hide Mood, Heat (spiciness), LFG Need, and Grab-chat options."),
+             "Show or hide Mood, Heat (spiciness), Variety, LFG Need, and Grab-chat options."),
             (getattr(self, "heat_slider", None),
              "How spicy / pushy the AI wording can get (Safe → Normal → Spicy)."),
             (getattr(self, "lfg_need_menu", None),
@@ -4899,6 +4921,42 @@ class GamersChatHelper:
         )
         self.lfg_need_menu.pack(side="left", padx=(pad(6), 0))
         tip(self.lfg_need_menu, "What you’re looking for in LFG (any / tank / heals / DPS…).")
+
+        variety_row = ctk.CTkFrame(self.advanced_frame, fg_color="transparent")
+        variety_row.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
+        self._field_label(variety_row, "Variety").pack(side="left")
+        self.variety_control = ctk.CTkSegmentedButton(
+            variety_row,
+            values=list(VARIETY_OPTIONS),
+            variable=self.variety_var,
+            width=sz(230),
+            height=sz(30),
+            font=f_ui(11, "bold"),
+            selected_color=C["info"],
+            selected_hover_color=C["info_h"],
+            unselected_color=C["surface"],
+            unselected_hover_color=C["hover"],
+            command=self.on_variety_changed,
+        )
+        self.variety_control.pack(side="left", padx=(pad(6), pad(10)))
+        self.variety_hint = ctk.CTkLabel(
+            variety_row,
+            text=VARIETY_DESCRIPTIONS[normalize_variety(self.variety_var.get())],
+            font=f_ui(11),
+            text_color=C["muted"],
+            anchor="w",
+        )
+        self.variety_hint.pack(side="left", fill="x", expand=True)
+        variety_help = (
+            "Chat writing only — OCR and Economy stay accuracy-focused.\n"
+            "Stable: closest to the original behavior; most consistent.\n"
+            "Varied: recommended; rotates phrasing and structure, and retries near-duplicates.\n"
+            "Wild: widest variation; may occasionally need a quick edit.\n"
+            "Noise has its own separate Chaos control."
+        )
+        tip(self.variety_control, variety_help)
+        tip(self.variety_hint, variety_help)
+
         self.ocr_last_cb = ctk.CTkCheckBox(
             self.advanced_frame, text="Grab chat: last line only",
             variable=self.ocr_prefer_last, font=f_ui(11), text_color=C["muted"],
@@ -5099,7 +5157,11 @@ class GamersChatHelper:
         self._update_quick_out_meter()
 
     def _advanced_toggle_label(self) -> str:
-        return "▾ Advanced Tweaks" if self.show_advanced.get() else "▸ Advanced Tweaks (Mood · Heat · Need)"
+        return (
+            "▾ Advanced Tweaks"
+            if self.show_advanced.get()
+            else "▸ Advanced Tweaks (Mood · Heat · Variety · Need)"
+        )
 
     def toggle_advanced(self):
         self.show_advanced.set(not self.show_advanced.get())
@@ -9499,6 +9561,14 @@ class GamersChatHelper:
         self.heat_label.configure(text=INTENSITY_LABELS.get(level, "Normal"))
         self.save_settings()
 
+    def on_variety_changed(self, value):
+        mode = normalize_variety(str(value or "Varied"))
+        self.variety_var.set(mode)
+        if hasattr(self, "variety_hint"):
+            self.variety_hint.configure(text=VARIETY_DESCRIPTIONS[mode])
+        self.save_settings()
+        self.show_toast(f"AI variety · {mode}", kind="info")
+
     def on_noise_level_change(self, value):
         level = int(round(float(value)))
         level = max(0, min(4, level))
@@ -13003,7 +13073,7 @@ class GamersChatHelper:
             cfg["frequency_penalty"] = 0.05 + level * 0.08
             cfg["presence_penalty"] = 0.0 + level * 0.08
             cfg["max_tokens"] = 40 + level * 8
-        return {
+        payload = {
             "temperature": float(cfg.get("temperature", 0.8)),
             "top_p": float(cfg.get("top_p", 0.9)),
             "top_k": int(cfg.get("top_k", 40)),
@@ -13014,6 +13084,12 @@ class GamersChatHelper:
             "max_tokens": int(cfg.get("max_tokens", 80)),
             "stream": False,
         }
+        variety = normalize_variety(
+            self.variety_var.get()
+            if hasattr(self, "variety_var")
+            else getattr(self, "saved_variety", "Varied")
+        )
+        return apply_variety(payload, job, variety)
 
     def call_local_llm(self, user_prompt: str, n: int = 1, job: str = "banter") -> list[str]:
         lim = self.limit()
@@ -13042,27 +13118,67 @@ class GamersChatHelper:
             base_tok = int(sampling.get("max_tokens", 80) or 80)
             sampling["max_tokens"] = min(900, max(base_tok, base_tok + (n - 1) * 70))
         self.api_url = self._normalize_api_url(self.api_url)
-        payload = {
-            "model": self._selected_lm_model(),
-            "messages": [
-                {"role": "system", "content": self.system_prompt(use_job)},
-                {"role": "user", "content": content},
-            ],
-            **sampling,
-        }
-        try:
-            r = requests.post(
-                self.api_url, json=payload, headers=self._llm_headers(), timeout=25
+        variety = normalize_variety(
+            self.variety_var.get()
+            if hasattr(self, "variety_var")
+            else getattr(self, "saved_variety", "Varied")
+        )
+        direction = structure_direction(job, variety)
+        if direction:
+            content += f"\n\nVARIETY DIRECTION: {direction}"
+
+        def request_once(request_content: str) -> tuple[str, Optional[str]]:
+            payload = {
+                "model": self._selected_lm_model(),
+                "messages": [
+                    {"role": "system", "content": self.system_prompt(use_job)},
+                    {"role": "user", "content": request_content},
+                ],
+                "seed": random_seed(),
+                **sampling,
+            }
+            try:
+                response = requests.post(
+                    self.api_url,
+                    json=payload,
+                    headers=self._llm_headers(),
+                    timeout=25,
+                )
+                if response.status_code != 200:
+                    return "", f"Error: HTTP {response.status_code}"
+                raw_text = response.json()["choices"][0]["message"]["content"].strip()
+                return raw_text, None
+            except Exception:
+                host = getattr(self, "lm_host", "") or LM_DEFAULT_LOCAL_HOST
+                return "", f"Backend offline. Start LM Studio server on {host}."
+
+        raw, error = request_once(content)
+        if error:
+            return [error]
+        if n > 1:
+            return self._parse_numbered(raw, n, lim)
+
+        first = self._clean_line(raw, lim)
+        recent = [
+            line
+            for line in list(getattr(self, "history", []) or [])[-12:]
+            if line and line.strip()
+        ]
+        closest, similarity = closest_recent_line(first, recent)
+        if closest and similarity >= retry_threshold(variety):
+            retry_content = (
+                content
+                + "\n\nNOVELTY RETRY: The first attempt was too similar to a recent line. "
+                "Change the opening, sentence rhythm, and wording. Do not reuse this line: "
+                + closest[:180]
             )
-            if r.status_code != 200:
-                return [f"Error: HTTP {r.status_code}"]
-            raw = r.json()["choices"][0]["message"]["content"].strip()
-            if n > 1:
-                return self._parse_numbered(raw, n, lim)
-            return [self._clean_line(raw, lim)]
-        except Exception:
-            host = getattr(self, "lm_host", "") or LM_DEFAULT_LOCAL_HOST
-            return [f"Backend offline. Start LM Studio server on {host}."]
+            retry_raw, retry_error = request_once(retry_content)
+            if not retry_error:
+                retry_line = self._clean_line(retry_raw, lim)
+                _, retry_similarity = closest_recent_line(retry_line, recent)
+                if retry_line and retry_similarity < similarity:
+                    return [retry_line]
+        return [first]
 
     def _clean_line(self, raw: str, lim: int) -> str:
         line = raw.strip().strip('"').strip("'")
