@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 
@@ -48,3 +49,65 @@ def merge_boss_timer_sites(
     merged = sanitize_boss_timer_sites(defaults)
     merged.update(sanitize_boss_timer_sites(overrides))
     return merged
+
+
+class _EventCardParser(HTMLParser):
+    """Extract compact event cards from server-rendered timer pages."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.article_depth: int | None = None
+        self.title = ""
+        self.parts: list[str] = []
+        self.cards: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.depth += 1
+        values = dict(attrs)
+        if tag == "article" and self.article_depth is None:
+            self.article_depth = self.depth
+            self.title = ""
+            self.parts = []
+        elif self.article_depth is not None and tag == "h3":
+            self.title = str(values.get("title") or "").strip()
+
+    def handle_data(self, data):
+        if self.article_depth is not None:
+            text = " ".join(data.split())
+            if text:
+                self.parts.append(text)
+
+    def handle_endtag(self, tag):
+        if tag == "article" and self.article_depth == self.depth:
+            text = " ".join(self.parts)
+            if self.title and ("Next spawn in" in text or "Next session in" in text):
+                marker = "Next spawn in" if "Next spawn in" in text else "Next session in"
+                tail = text.split(marker, 1)[1].strip()
+                bits = tail.split()
+                countdown_parts: list[str] = []
+                for bit in bits:
+                    if any(ch.isdigit() for ch in bit) and bit[-1:].lower() in {"d", "h", "m", "s"}:
+                        countdown_parts.append(bit)
+                    else:
+                        break
+                countdown = " ".join(countdown_parts)
+                detail = " ".join(bits[len(countdown_parts):]).strip()
+                if countdown:
+                    self.cards.append(
+                        {"name": self.title, "countdown": countdown, "detail": detail}
+                    )
+            self.article_depth = None
+            self.title = ""
+            self.parts = []
+        self.depth = max(0, self.depth - 1)
+
+
+def parse_event_cards(html: str) -> list[dict[str, str]]:
+    """Return event name/countdown/detail cards from server-rendered HTML."""
+    parser = _EventCardParser()
+    try:
+        parser.feed(str(html or ""))
+    except Exception:
+        return []
+    return parser.cards[:80]

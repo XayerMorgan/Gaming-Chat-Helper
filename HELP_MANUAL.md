@@ -125,10 +125,10 @@ with `https://thequinfall-codex.com/events` as its default.
 
 - Edit the URL and choose **Save for game** to keep a different page for the
   active game.
-- **Reload** refreshes the embedded compatibility view.
+- **Reload** refreshes Hyperline's clean, native event cards.
 - **Open live page** opens the same URL in your normal browser for pages that
   require full JavaScript interaction.
-- The embedded view refreshes once per minute while the tab is active.
+- The timer cards refresh once per minute while the tab is active.
 
 Shipped defaults live in `boss_timer_sites.defaults.json`. Your changes live in
 the private, Git-ignored `chat_helper_config.json` and can also travel in a

@@ -29,6 +29,7 @@ from hyperline_boss_timers import (
     load_boss_timer_defaults,
     merge_boss_timer_sites,
     normalize_timer_url,
+    parse_event_cards,
     sanitize_boss_timer_sites,
 )
 from hyperline_generation import (
@@ -54,14 +55,6 @@ from hyperline_vengeance import (
     make_vengeance_entry,
     sanitize_vengeance_entries,
 )
-
-try:
-    from tkinterweb import HtmlFrame
-
-    _HAS_TKINTERWEB = True
-except Exception:
-    HtmlFrame = None  # type: ignore
-    _HAS_TKINTERWEB = False
 
 try:
     from PIL import Image, ImageGrab, ImageEnhance, ImageOps
@@ -245,9 +238,9 @@ HELP_CONTEXT = {
         "BOSS & EVENT TIMERS\n\n"
         "Each game can use a different timer page.\n\n"
         "• Paste a complete URL and choose Save for game\n"
-        "• Reload refreshes the embedded compatibility view\n"
+        "• Reload refreshes clean native event cards\n"
         "• Open live page provides full JavaScript behavior in your browser\n"
-        "• The embedded view refreshes every 60 seconds while this tab is open\n\n"
+        "• Timer cards refresh every 60 seconds while this tab is open\n\n"
         "The Quinfall defaults to the Quinfall Codex events page."
     ),
     "Calculator": (
@@ -7671,7 +7664,7 @@ class GamersChatHelper:
             pass
 
     def build_boss_timer_tab(self):
-        """Embedded, per-game boss/event timer page with a browser fallback."""
+        """Native, per-game boss/event timer cards with a browser fallback."""
         tab = self.tabview.tab("Boss Timers")
         tab.configure(fg_color=C["surface"])
 
@@ -7769,53 +7762,18 @@ class GamersChatHelper:
             border_color=C["line"],
         )
         web_host.pack(fill="both", expand=True, padx=pad(10), pady=(0, pad(10)))
-        self.boss_timer_web = None
-        if _HAS_TKINTERWEB and HtmlFrame is not None:
-            try:
-                self.boss_timer_web = HtmlFrame(
-                    web_host,
-                    messages_enabled=False,
-                    javascript_enabled=False,
-                    vertical_scrollbar="auto",
-                    horizontal_scrollbar="auto",
-                    dark_theme_enabled=False,
-                    threading_enabled=True,
-                    crash_prevention_enabled=True,
-                    on_link_click=lambda url: webbrowser.open(url),
-                    on_navigate_fail=self._boss_timer_navigate_failed,
-                )
-                self.boss_timer_web.pack(
-                    fill="both",
-                    expand=True,
-                    padx=pad(4),
-                    pady=pad(4),
-                )
-            except Exception:
-                LOG.exception("Could not initialize embedded boss timer browser")
-                self.boss_timer_web = None
-        if self.boss_timer_web is None:
-            ctk.CTkLabel(
-                web_host,
-                text=(
-                    "Embedded web view is unavailable.\n"
-                    "Use Open live page, or install requirements.txt."
-                ),
-                font=f_ui(14),
-                text_color=C["muted"],
-                justify="center",
-            ).pack(expand=True)
+        self.boss_timer_cards = ctk.CTkScrollableFrame(
+            web_host,
+            fg_color="transparent",
+            scrollbar_button_color=C["line"],
+            scrollbar_button_hover_color=C["muted"],
+        )
+        self.boss_timer_cards.pack(fill="both", expand=True, padx=pad(6), pady=pad(6))
+        self._render_boss_timer_cards([])
 
         self._boss_timer_loaded_url = ""
         self.refresh_boss_timer_tab(load_page=False)
         self.root.after(60_000, self._boss_timer_auto_refresh)
-
-    def _boss_timer_navigate_failed(self, url, error=None, code=None):
-        self.schedule_ui(
-            lambda: self.boss_timer_status.configure(
-                text=f"Embed could not load this page ({code or 'network'}). Use Open live page.",
-                text_color=C["warn"],
-            )
-        )
 
     def active_boss_timer_url(self) -> str:
         game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
@@ -7837,26 +7795,109 @@ class GamersChatHelper:
             )
             return
         self.boss_timer_status.configure(
-            text=(
-                "Embedded compatibility view refreshes every 60 seconds. "
-                "Use Open live page for full JavaScript interactions."
-            ),
+            text="Hyperline timer view refreshes every 60 seconds. Open live page for full site controls.",
             text_color=C["muted"],
         )
         if (
             load_page
-            and self.boss_timer_web is not None
             and (force or url != getattr(self, "_boss_timer_loaded_url", ""))
         ):
             self._boss_timer_loaded_url = url
-            try:
-                self.boss_timer_web.load_website(url)
-            except Exception:
-                LOG.exception("Could not load boss timer page %s", url)
-                self.boss_timer_status.configure(
-                    text="Embed failed to load. Use Open live page.",
-                    text_color=C["warn"],
-                )
+            self.boss_timer_status.configure(
+                text="Refreshing event timers…",
+                text_color=C["muted"],
+            )
+            threading.Thread(
+                target=self._fetch_boss_timer_cards,
+                args=(url,),
+                daemon=True,
+            ).start()
+
+    def _fetch_boss_timer_cards(self, url: str):
+        try:
+            response = requests.get(
+                url,
+                timeout=20,
+                headers={"User-Agent": f"{APP_NAME}/{APP_VERSION} timer view"},
+            )
+            response.raise_for_status()
+            cards = parse_event_cards(response.text)
+            error = "" if cards else "This page does not expose readable timer cards."
+        except Exception as exc:
+            LOG.warning("Could not refresh boss timers from %s: %s", url, exc)
+            cards = []
+            error = "Could not refresh timers. Open the live page or try Reload."
+        self.schedule_ui(lambda: self._finish_boss_timer_refresh(url, cards, error))
+
+    def _finish_boss_timer_refresh(self, url: str, cards: list[dict], error: str):
+        if url != self.active_boss_timer_url():
+            return
+        self._render_boss_timer_cards(cards, error)
+        if cards:
+            self.boss_timer_status.configure(
+                text=(
+                    f"{len(cards)} live events · refreshed {time.strftime('%I:%M:%S %p').lstrip('0')} "
+                    "· Open live page for channel and server controls."
+                ),
+                text_color=C["muted"],
+            )
+        else:
+            self.boss_timer_status.configure(text=error, text_color=C["warn"])
+
+    def _render_boss_timer_cards(self, cards: list[dict], error: str = ""):
+        if not hasattr(self, "boss_timer_cards"):
+            return
+        for child in self.boss_timer_cards.winfo_children():
+            child.destroy()
+        if not cards:
+            ctk.CTkLabel(
+                self.boss_timer_cards,
+                text=error or "Open this tab or choose Reload to fetch event timers.",
+                font=f_ui(14),
+                text_color=C["muted"],
+            ).grid(row=0, column=0, padx=pad(16), pady=pad(30), sticky="w")
+            return
+        columns = 3
+        for column in range(columns):
+            self.boss_timer_cards.grid_columnconfigure(column, weight=1, uniform="timers")
+        for index, card in enumerate(cards):
+            row, column = divmod(index, columns)
+            panel = ctk.CTkFrame(
+                self.boss_timer_cards,
+                fg_color=C["surface"],
+                corner_radius=10,
+                border_width=1,
+                border_color=C["line"],
+            )
+            panel.grid(
+                row=row,
+                column=column,
+                padx=pad(5),
+                pady=pad(5),
+                sticky="nsew",
+            )
+            ctk.CTkLabel(
+                panel,
+                text=str(card.get("name") or "Event"),
+                font=f_ui(14, "bold"),
+                text_color=C["text"],
+                anchor="w",
+            ).pack(fill="x", padx=pad(12), pady=(pad(10), pad(2)))
+            ctk.CTkLabel(
+                panel,
+                text=str(card.get("countdown") or "—"),
+                font=f_ui(22, "bold"),
+                text_color=C["accent"],
+                anchor="w",
+            ).pack(fill="x", padx=pad(12))
+            ctk.CTkLabel(
+                panel,
+                text=str(card.get("detail") or "Live event"),
+                font=f_ui(10),
+                text_color=C["muted"],
+                anchor="w",
+                wraplength=sz(240),
+            ).pack(fill="x", padx=pad(12), pady=(pad(3), pad(10)))
 
     def save_boss_timer_site(self):
         game = self.game_var.get() if hasattr(self, "game_var") else self.default_game
