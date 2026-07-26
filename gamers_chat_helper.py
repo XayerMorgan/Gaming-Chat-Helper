@@ -36,6 +36,13 @@ from hyperline_generation import (
     structure_direction,
 )
 from hyperline_persistence import atomic_write_json, configure_diagnostics
+from hyperline_vengeance import (
+    TARGET_TYPES,
+    VENGEANCE_REASONS,
+    extract_combat_targets,
+    make_vengeance_entry,
+    sanitize_vengeance_entries,
+)
 
 try:
     from PIL import Image, ImageGrab, ImageEnhance, ImageOps
@@ -166,6 +173,7 @@ ASSETS_DIR = os.path.join(APP_DIR, "assets")
 GAMES_ASSETS_DIR = os.path.join(ASSETS_DIR, "games")
 LAST_OCR_PATH = os.path.join(APP_DIR, "last_chat_capture.png")
 LAST_MARKET_PATH = os.path.join(APP_DIR, "last_market_capture.png")
+LAST_VENGEANCE_PATH = os.path.join(APP_DIR, "last_vengeance_capture.png")
 STEAM_LOG_PATH = os.path.join(APP_DIR, "steam_players_log.txt")
 ECONOMY_LOG_PATH = os.path.join(APP_DIR, "economy_price_log.jsonl")
 SESSION_EXPORT_PATH = os.path.join(APP_DIR, "session_export.txt")
@@ -230,6 +238,15 @@ HELP_CONTEXT = {
         "5. Flip profit · WTS macros · price log\n\n"
         "Advice only uses comps visible in the image.\n"
         "Open Help → Full Manual for the full Economy section."
+    ),
+    "Vengeance List": (
+        "VENGEANCE LIST · IN-GAME TARGETS ONLY\n\n"
+        "Track a player or guild you want to remember in the current game.\n\n"
+        "• Type a target manually, or set a combat-log box and capture it\n"
+        "• Choose Player or Guild and record why they made the list\n"
+        "• Combat OCR suggests names; confirm the correct one before adding\n"
+        "• Mark a score settled without deleting the history\n\n"
+        "This feature is for fictional in-game rivalry—not real-world people."
     ),
     "Setup": (
         "SETUP\n\n"
@@ -1654,10 +1671,12 @@ class GamersChatHelper:
         self.ocr_prefer_last = tk.BooleanVar(value=bool(self.saved_ocr_prefer_last))
         self._last_ocr_text = ""
         self._last_market_text = ""
+        self._last_vengeance_text = ""
         self._last_economy_suggest = ""
         self._last_economy_wts = ""
         self._ocr_busy = False
         self._economy_busy = False
+        self._vengeance_busy = False
         self.economy_item_var = tk.StringVar(value=str(getattr(self, "saved_economy_item", "") or ""))
         self.economy_undercut_var = tk.StringVar(
             value=str(getattr(self, "saved_economy_undercut", "5") or "5")
@@ -1675,6 +1694,14 @@ class GamersChatHelper:
 
         self.history: list[str] = list(self.saved_history)
         self.favorites: list[str] = list(self.saved_favorites)
+        self.vengeance_entries: list[dict] = sanitize_vengeance_entries(
+            getattr(self, "saved_vengeance_entries", [])
+        )
+        self.vengeance_region: Optional[dict] = (
+            dict(self.saved_vengeance_region)
+            if getattr(self, "saved_vengeance_region", None)
+            else None
+        )
         self.copy_counts: dict[str, int] = dict(self.saved_copy_counts)
         self.hidden_lines: dict[str, list[str]] = dict(self.saved_hidden_lines)
         # Library multi-select (phrases checked for batch delete)
@@ -1799,6 +1826,8 @@ class GamersChatHelper:
         self.saved_lfg_party_finder = True
         self.saved_chat_region: Optional[dict] = None
         self.saved_market_region: Optional[dict] = None
+        self.saved_vengeance_region: Optional[dict] = None
+        self.saved_vengeance_entries: list[dict] = []
         self.saved_economy_item = ""
         self.saved_economy_undercut = "5"
         self.saved_ocr_prefer_last = True
@@ -1890,6 +1919,12 @@ class GamersChatHelper:
                 mr = _valid_region_dict(data.get("market_region"))
                 if mr:
                     self.saved_market_region = mr
+                vr = _valid_region_dict(data.get("vengeance_region"))
+                if vr:
+                    self.saved_vengeance_region = vr
+                self.saved_vengeance_entries = sanitize_vengeance_entries(
+                    data.get("vengeance_entries") or []
+                )
                 self.saved_economy_item = str(data.get("economy_item", "") or "")[:120]
                 self.saved_economy_undercut = str(data.get("economy_undercut", "5") or "5")[:8]
                 self.saved_ocr_prefer_last = bool(data.get("ocr_prefer_last_line", True))
@@ -2114,6 +2149,12 @@ class GamersChatHelper:
             # Legacy single-slot fields stay filled from the *active* game for older builds
             "chat_region": getattr(self, "chat_region", self.saved_chat_region),
             "market_region": getattr(self, "market_region", self.saved_market_region),
+            "vengeance_region": getattr(
+                self, "vengeance_region", self.saved_vengeance_region
+            ),
+            "vengeance_entries": sanitize_vengeance_entries(
+                getattr(self, "vengeance_entries", self.saved_vengeance_entries)
+            ),
             "economy_item": (
                 self.economy_item_var.get().strip()[:120]
                 if hasattr(self, "economy_item_var")
@@ -3513,11 +3554,20 @@ class GamersChatHelper:
         except Exception:
             pass
 
-        for name in ("Chat Generator", "Library", "Time", "Calculator", "Economy", "Setup"):
+        for name in (
+            "Chat Generator",
+            "Library",
+            "Vengeance List",
+            "Time",
+            "Calculator",
+            "Economy",
+            "Setup",
+        ):
             self.tabview.add(name)
 
         self.build_generator_tab()
         self.build_library_tab()
+        self.build_vengeance_tab()
         self.build_time_tab()
         self.build_calculator_tab()
         self.build_economy_tab()
@@ -5915,6 +5965,665 @@ class GamersChatHelper:
             text_color=C["danger"] if danger else C["muted"],
             command=command,
         )
+
+    def build_vengeance_tab(self):
+        """In-game player/guild memory list with optional combat-log OCR."""
+        tab = self.tabview.tab("Vengeance List")
+        body = ctk.CTkScrollableFrame(
+            tab,
+            fg_color="transparent",
+            scrollbar_button_color=C["line"],
+            scrollbar_button_hover_color=C["muted"],
+        )
+        body.pack(fill="both", expand=True, padx=pad(8), pady=pad(8))
+
+        intro = ctk.CTkFrame(
+            body,
+            fg_color=C["elevated"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        intro.pack(fill="x", pady=(0, pad(8)))
+        ctk.CTkLabel(
+            intro,
+            text="⚔  VENGEANCE LIST",
+            font=f_ui(19, "bold"),
+            text_color=C["primary"],
+            anchor="w",
+        ).pack(fill="x", padx=pad(14), pady=(pad(12), pad(2)))
+        ctk.CTkLabel(
+            intro,
+            text=(
+                "Track in-game rivals and guild feuds. Confirm OCR suggestions before saving — "
+                "combat-log formats vary by game."
+            ),
+            font=f_ui(12),
+            text_color=C["muted"],
+            anchor="w",
+            justify="left",
+            wraplength=sz(900),
+        ).pack(fill="x", padx=pad(14), pady=(0, pad(10)))
+
+        capture = ctk.CTkFrame(
+            body,
+            fg_color=C["surface"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        capture.pack(fill="x", pady=(0, pad(8)))
+        cap_head = ctk.CTkFrame(capture, fg_color="transparent")
+        cap_head.pack(fill="x", padx=pad(12), pady=(pad(10), pad(6)))
+        ctk.CTkLabel(
+            cap_head,
+            text="COMBAT LOG CAPTURE",
+            font=f_ui(12, "bold"),
+            text_color=C["info"],
+        ).pack(side="left")
+        self.vengeance_region_label = ctk.CTkLabel(
+            cap_head,
+            text=self._vengeance_region_status(),
+            font=f_ui(11),
+            text_color=C["muted"],
+        )
+        self.vengeance_region_label.pack(side="left", padx=(pad(10), 0))
+
+        cap_actions = ctk.CTkFrame(capture, fg_color="transparent")
+        cap_actions.pack(fill="x", padx=pad(12), pady=(0, pad(8)))
+        set_region_btn = ctk.CTkButton(
+            cap_actions,
+            text="Set combat log box",
+            height=sz(34),
+            width=sz(150),
+            font=f_ui(12, "bold"),
+            fg_color=C["elevated"],
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            command=self.calibrate_vengeance_region,
+        )
+        set_region_btn.pack(side="left")
+        grab_btn = ctk.CTkButton(
+            cap_actions,
+            text="Capture + find names",
+            height=sz(34),
+            width=sz(170),
+            font=f_ui(12, "bold"),
+            fg_color=C["info"],
+            hover_color=C["info_h"],
+            command=self.capture_vengeance_log,
+        )
+        grab_btn.pack(side="left", padx=pad(6))
+        ctk.CTkButton(
+            cap_actions,
+            text="Open last capture",
+            height=sz(34),
+            width=sz(140),
+            font=f_ui(12),
+            fg_color="transparent",
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            command=self.open_last_vengeance_capture,
+        ).pack(side="left")
+        tip(
+            grab_btn,
+            "Captures only the box you set, transcribes the combat log, and suggests likely "
+            "killer names. Always confirm the name before adding it.",
+        )
+
+        suggestion_row = ctk.CTkFrame(capture, fg_color="transparent")
+        suggestion_row.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
+        ctk.CTkLabel(
+            suggestion_row,
+            text="Detected",
+            width=sz(68),
+            font=f_ui(11, "bold"),
+            text_color=C["muted"],
+            anchor="w",
+        ).pack(side="left")
+        self.vengeance_suggestion_var = tk.StringVar(value="No capture yet")
+        self._vengeance_suggestions: dict[str, dict[str, str]] = {}
+        self.vengeance_suggestion_menu = ctk.CTkOptionMenu(
+            suggestion_row,
+            variable=self.vengeance_suggestion_var,
+            values=["No capture yet"],
+            height=sz(30),
+            font=f_ui(11),
+            fg_color=C["elevated"],
+            button_color=C["hover"],
+            command=self._use_vengeance_suggestion,
+        )
+        self.vengeance_suggestion_menu.pack(side="left", fill="x", expand=True)
+
+        form = ctk.CTkFrame(
+            body,
+            fg_color=C["elevated"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["line"],
+        )
+        form.pack(fill="x", pady=(0, pad(8)))
+        form_head = ctk.CTkFrame(form, fg_color="transparent")
+        form_head.pack(fill="x", padx=pad(12), pady=(pad(10), pad(6)))
+        ctk.CTkLabel(
+            form_head,
+            text="ADD AN IN-GAME TARGET",
+            font=f_ui(12, "bold"),
+            text_color=C["primary"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            form_head,
+            text="Player or guild · manual entry always works",
+            font=f_ui(11),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(pad(10), 0))
+
+        self.vengeance_type_var = tk.StringVar(value="Player")
+        self.vengeance_name_var = tk.StringVar(value="")
+        self.vengeance_guild_var = tk.StringVar(value="")
+        self.vengeance_reason_var = tk.StringVar(value=VENGEANCE_REASONS[0])
+        first_row = ctk.CTkFrame(form, fg_color="transparent")
+        first_row.pack(fill="x", padx=pad(12), pady=(0, pad(7)))
+        self.vengeance_type_control = ctk.CTkSegmentedButton(
+            first_row,
+            values=list(TARGET_TYPES),
+            variable=self.vengeance_type_var,
+            width=sz(145),
+            height=sz(32),
+            font=f_ui(11, "bold"),
+            selected_color=C["info"],
+            selected_hover_color=C["info_h"],
+            unselected_color=C["surface"],
+            unselected_hover_color=C["hover"],
+            command=lambda _=None: self._vengeance_type_changed(),
+        )
+        self.vengeance_type_control.pack(side="left")
+        ctk.CTkLabel(
+            first_row,
+            text="Target",
+            font=f_ui(10, "bold"),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(pad(7), pad(4)))
+        self.vengeance_name_entry = ctk.CTkEntry(
+            first_row,
+            textvariable=self.vengeance_name_var,
+            placeholder_text="Player name",
+            height=sz(32),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            border_color=C["line"],
+        )
+        self.vengeance_name_entry.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            first_row,
+            text="Guild",
+            font=f_ui(10, "bold"),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(pad(7), pad(4)))
+        self.vengeance_guild_entry = ctk.CTkEntry(
+            first_row,
+            textvariable=self.vengeance_guild_var,
+            placeholder_text="Guild tag / guild (optional)",
+            width=sz(180),
+            height=sz(32),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            border_color=C["line"],
+        )
+        self.vengeance_guild_entry.pack(side="left")
+
+        second_row = ctk.CTkFrame(form, fg_color="transparent")
+        second_row.pack(fill="x", padx=pad(12), pady=(0, pad(7)))
+        ctk.CTkLabel(
+            second_row,
+            text="Why",
+            width=sz(40),
+            font=f_ui(11, "bold"),
+            text_color=C["muted"],
+            anchor="w",
+        ).pack(side="left")
+        self.vengeance_reason_menu = ctk.CTkOptionMenu(
+            second_row,
+            variable=self.vengeance_reason_var,
+            values=list(VENGEANCE_REASONS),
+            width=sz(230),
+            height=sz(32),
+            font=f_ui(11),
+            fg_color=C["surface"],
+            button_color=C["hover"],
+        )
+        self.vengeance_reason_menu.pack(side="left", padx=(0, pad(7)))
+        ctk.CTkLabel(
+            second_row,
+            text="Characterize the in-game grudge:",
+            font=f_ui(11),
+            text_color=C["muted"],
+        ).pack(side="left")
+
+        self.vengeance_details_box = ctk.CTkTextbox(
+            form,
+            height=sz(64),
+            font=f_ui(12),
+            fg_color=C["surface"],
+            border_width=1,
+            border_color=C["line"],
+            wrap="word",
+        )
+        self.vengeance_details_box.pack(fill="x", padx=pad(12), pady=(0, pad(7)))
+        self.vengeance_details_box.insert(
+            "1.0",
+            "",
+        )
+        add_row = ctk.CTkFrame(form, fg_color="transparent")
+        add_row.pack(fill="x", padx=pad(12), pady=(0, pad(10)))
+        ctk.CTkLabel(
+            add_row,
+            text="Keep this about fictional in-game rivalry.",
+            font=f_ui(10),
+            text_color=C["muted"],
+        ).pack(side="left")
+        ctk.CTkButton(
+            add_row,
+            text="Add to Vengeance List",
+            height=sz(36),
+            width=sz(190),
+            font=f_ui(12, "bold"),
+            fg_color=C["primary"],
+            hover_color=C["primary_h"],
+            command=self.add_vengeance_entry,
+        ).pack(side="right")
+
+        list_head = ctk.CTkFrame(body, fg_color="transparent")
+        list_head.pack(fill="x", pady=(pad(2), pad(5)))
+        self.vengeance_count_label = ctk.CTkLabel(
+            list_head,
+            text="TARGETS",
+            font=f_ui(12, "bold"),
+            text_color=C["text"],
+        )
+        self.vengeance_count_label.pack(side="left")
+        ctk.CTkButton(
+            list_head,
+            text="Clear settled",
+            width=sz(100),
+            height=sz(28),
+            font=f_ui(10),
+            fg_color="transparent",
+            hover_color=C["hover"],
+            border_width=1,
+            border_color=C["line"],
+            command=self.clear_settled_vengeance,
+        ).pack(side="right")
+        self.vengeance_list_host = ctk.CTkFrame(body, fg_color="transparent")
+        self.vengeance_list_host.pack(fill="x")
+        self.refresh_vengeance_list()
+
+    def _vengeance_region_status(self) -> str:
+        region = _valid_region_dict(getattr(self, "vengeance_region", None))
+        if not region:
+            return "Combat log box not set"
+        width = region["right"] - region["left"]
+        height = region["bottom"] - region["top"]
+        return f"Box set · {width}×{height}px"
+
+    def _refresh_vengeance_region_status(self, extra: str = ""):
+        if not hasattr(self, "vengeance_region_label"):
+            return
+        text = self._vengeance_region_status()
+        if extra:
+            text += f" · {extra}"
+        self.vengeance_region_label.configure(text=text)
+
+    def _vengeance_type_changed(self):
+        kind = self.vengeance_type_var.get()
+        placeholder = "Guild name / tag" if kind == "Guild" else "Player name"
+        self.vengeance_name_entry.configure(placeholder_text=placeholder)
+        selected = self.vengeance_suggestion_var.get()
+        if selected in self._vengeance_suggestions:
+            self._use_vengeance_suggestion(selected)
+
+    def _use_vengeance_suggestion(self, label: str):
+        suggestion = self._vengeance_suggestions.get(label)
+        if not suggestion:
+            return
+        guild = suggestion.get("guild", "")
+        if self.vengeance_type_var.get() == "Guild" and guild:
+            self.vengeance_name_var.set(guild)
+        else:
+            self.vengeance_name_var.set(suggestion.get("name", ""))
+            self.vengeance_guild_var.set(guild)
+
+    def add_vengeance_entry(self):
+        try:
+            details = self.vengeance_details_box.get("1.0", "end-1c")
+            selected = self._vengeance_suggestions.get(
+                self.vengeance_suggestion_var.get()
+            )
+            entered_name = self.vengeance_name_var.get()
+            suggestion_name = ""
+            if selected:
+                suggestion_name = (
+                    selected.get("guild", "")
+                    if self.vengeance_type_var.get() == "Guild"
+                    else selected.get("name", "")
+                )
+            entry = make_vengeance_entry(
+                name=entered_name,
+                target_type=self.vengeance_type_var.get(),
+                reason=self.vengeance_reason_var.get(),
+                details=details,
+                guild=self.vengeance_guild_var.get(),
+                game=self.game_var.get() if hasattr(self, "game_var") else "",
+                source=(
+                    "combat log"
+                    if suggestion_name
+                    and entered_name.strip().casefold()
+                    == suggestion_name.strip().casefold()
+                    else "manual"
+                ),
+            )
+        except ValueError as exc:
+            self.show_toast(str(exc), kind="warn")
+            self.vengeance_name_entry.focus_set()
+            return
+
+        existing = next(
+            (
+                row
+                for row in self.vengeance_entries
+                if not row.get("settled")
+                and str(row.get("name", "")).casefold() == entry["name"].casefold()
+                and row.get("target_type") == entry["target_type"]
+                and row.get("game") == entry["game"]
+            ),
+            None,
+        )
+        if existing:
+            existing.update(
+                {
+                    "guild": entry["guild"],
+                    "reason": entry["reason"],
+                    "details": entry["details"],
+                    "source": entry["source"],
+                    "created_at": entry["created_at"],
+                }
+            )
+            action = "updated"
+        else:
+            self.vengeance_entries.append(entry)
+            self.vengeance_entries = self.vengeance_entries[-250:]
+            action = "added"
+        self.save_settings()
+        self.refresh_vengeance_list()
+        self.vengeance_name_var.set("")
+        self.vengeance_guild_var.set("")
+        self.vengeance_details_box.delete("1.0", "end")
+        self.show_toast(f"{entry['name']} · {action}", kind="ok")
+
+    def refresh_vengeance_list(self):
+        if not hasattr(self, "vengeance_list_host"):
+            return
+        for child in self.vengeance_list_host.winfo_children():
+            child.destroy()
+        rows = sorted(
+            self.vengeance_entries,
+            key=lambda row: (bool(row.get("settled")), -float(row.get("created_at", 0))),
+        )
+        active_count = sum(1 for row in rows if not row.get("settled"))
+        if hasattr(self, "vengeance_count_label"):
+            self.vengeance_count_label.configure(
+                text=f"TARGETS · {active_count} active · {len(rows)} total"
+            )
+        if not rows:
+            ctk.CTkLabel(
+                self.vengeance_list_host,
+                text="No targets yet · type a player/guild above or capture the combat log.",
+                font=f_ui(12),
+                text_color=C["muted"],
+            ).pack(fill="x", pady=pad(18))
+            return
+
+        for row in rows:
+            settled = bool(row.get("settled"))
+            card = ctk.CTkFrame(
+                self.vengeance_list_host,
+                fg_color=C["surface"] if not settled else C["elevated"],
+                corner_radius=10,
+                border_width=1,
+                border_color=C["line"],
+            )
+            card.pack(fill="x", pady=(0, pad(6)))
+            left = ctk.CTkFrame(card, fg_color="transparent")
+            left.pack(side="left", fill="both", expand=True, padx=pad(12), pady=pad(9))
+            kind = str(row.get("target_type", "Player")).upper()
+            guild = str(row.get("guild", "") or "")
+            guild_bit = f" · [{guild}]" if guild and row.get("target_type") == "Player" else ""
+            status = " · SETTLED" if settled else ""
+            ctk.CTkLabel(
+                left,
+                text=f"{kind}  ·  {row.get('name', '?')}{guild_bit}{status}",
+                font=f_ui(13, "bold"),
+                text_color=C["muted"] if settled else C["danger"],
+                anchor="w",
+            ).pack(fill="x")
+            reason = str(row.get("reason", "Other"))
+            details = str(row.get("details", "") or "")
+            game = str(row.get("game", "") or "")
+            meta = f"{reason}"
+            if details:
+                meta += f" · {details}"
+            if game:
+                meta += f"  ·  {game}"
+            ctk.CTkLabel(
+                left,
+                text=meta,
+                font=f_ui(11),
+                text_color=C["muted"],
+                anchor="w",
+                justify="left",
+                wraplength=sz(700),
+            ).pack(fill="x", pady=(pad(2), 0))
+
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.pack(side="right", padx=pad(8), pady=pad(8))
+            ctk.CTkButton(
+                actions,
+                text="Copy",
+                width=sz(58),
+                height=sz(28),
+                font=f_ui(10),
+                fg_color="transparent",
+                hover_color=C["hover"],
+                border_width=1,
+                border_color=C["line"],
+                command=lambda value=row.get("name", ""): self.copy_vengeance_target(
+                    str(value)
+                ),
+            ).pack(side="left", padx=(0, pad(4)))
+            ctk.CTkButton(
+                actions,
+                text="Reopen" if settled else "Settled",
+                width=sz(70),
+                height=sz(28),
+                font=f_ui(10),
+                fg_color=C["success_dim"] if not settled else C["elevated"],
+                hover_color=C["hover"],
+                border_width=1,
+                border_color=C["line"],
+                command=lambda rid=row.get("id", ""): self.toggle_vengeance_settled(str(rid)),
+            ).pack(side="left", padx=(0, pad(4)))
+            ctk.CTkButton(
+                actions,
+                text="Delete",
+                width=sz(58),
+                height=sz(28),
+                font=f_ui(10),
+                fg_color="transparent",
+                hover_color=C["danger_dim"],
+                border_width=1,
+                border_color=C["line"],
+                command=lambda rid=row.get("id", ""): self.delete_vengeance_entry(str(rid)),
+            ).pack(side="left")
+
+    def copy_vengeance_target(self, name: str):
+        """Copy a target without polluting generated-chat history."""
+        name = str(name or "").strip()
+        if not name:
+            return
+        try:
+            pyperclip.copy(name)
+            self.show_toast(f"Copied target · {name}", kind="ok")
+        except Exception:
+            self.show_toast("Clipboard failed", kind="error")
+
+    def toggle_vengeance_settled(self, entry_id: str):
+        for row in self.vengeance_entries:
+            if str(row.get("id")) == entry_id:
+                row["settled"] = not bool(row.get("settled"))
+                break
+        self.save_settings()
+        self.refresh_vengeance_list()
+
+    def delete_vengeance_entry(self, entry_id: str):
+        row = next(
+            (item for item in self.vengeance_entries if str(item.get("id")) == entry_id),
+            None,
+        )
+        if not row:
+            return
+        if not messagebox.askyesno(
+            "Delete target",
+            f"Remove {row.get('name', 'this target')} from the Vengeance List?",
+        ):
+            return
+        self.vengeance_entries = [
+            item for item in self.vengeance_entries if str(item.get("id")) != entry_id
+        ]
+        self.save_settings()
+        self.refresh_vengeance_list()
+
+    def clear_settled_vengeance(self):
+        settled = sum(1 for row in self.vengeance_entries if row.get("settled"))
+        if not settled:
+            self.show_toast("No settled targets to clear", kind="info")
+            return
+        if not messagebox.askyesno(
+            "Clear settled",
+            f"Delete {settled} settled Vengeance List entr{'y' if settled == 1 else 'ies'}?",
+        ):
+            return
+        self.vengeance_entries = [
+            row for row in self.vengeance_entries if not row.get("settled")
+        ]
+        self.save_settings()
+        self.refresh_vengeance_list()
+
+    def calibrate_vengeance_region(self):
+        self._start_region_calibrate(
+            prompt="Drag a box over the COMBAT LOG  ·  release to save  ·  Esc to cancel",
+            on_saved=self._on_vengeance_region_saved,
+            on_cancel=lambda: self._refresh_vengeance_region_status("cancelled"),
+        )
+
+    def _on_vengeance_region_saved(self, region: dict):
+        self.vengeance_region = region
+        self.save_settings()
+        self._refresh_vengeance_region_status("saved")
+        self.show_toast("Combat log box saved", kind="ok")
+
+    def open_last_vengeance_capture(self):
+        if not os.path.isfile(LAST_VENGEANCE_PATH):
+            self.show_toast("No combat-log capture yet", kind="warn")
+            return
+        try:
+            os.startfile(LAST_VENGEANCE_PATH)  # type: ignore[attr-defined]
+        except Exception:
+            subprocess.Popen(["explorer", "/select,", LAST_VENGEANCE_PATH])
+
+    def capture_vengeance_log(self):
+        if self._vengeance_busy:
+            self.show_toast("Combat OCR already running…", kind="warn")
+            return
+        region = _valid_region_dict(self.vengeance_region)
+        if not region:
+            if messagebox.askyesno(
+                "Set combat log box",
+                "No combat-log area is set yet.\n\nSet it now?",
+            ):
+                self.calibrate_vengeance_region()
+            return
+        if not _HAS_PIL or ImageGrab is None:
+            messagebox.showerror("Pillow required", "Install Pillow to capture the screen.")
+            return
+
+        self._vengeance_busy = True
+        self._refresh_vengeance_region_status("capturing…")
+        was_top = bool(self.always_on_top.get()) if hasattr(self, "always_on_top") else False
+        try:
+            if was_top:
+                self.root.attributes("-topmost", False)
+        except Exception:
+            pass
+
+        def work():
+            error = ""
+            text = ""
+            engine = ""
+            try:
+                time.sleep(0.18)
+                bbox = (
+                    region["left"],
+                    region["top"],
+                    region["right"],
+                    region["bottom"],
+                )
+                image = ImageGrab.grab(bbox=bbox, all_screens=True)
+                image.save(LAST_VENGEANCE_PATH)
+                text, engine = self._ocr_image(image, purpose="combat")
+                text = self._clean_ocr_text(text)
+            except Exception as exc:
+                error = str(exc)
+
+            def done():
+                self._vengeance_busy = False
+                try:
+                    if was_top:
+                        self.root.attributes("-topmost", True)
+                except Exception:
+                    pass
+                if error:
+                    self._refresh_vengeance_region_status("capture failed")
+                    self.show_toast(f"Combat OCR failed: {error[:50]}", kind="error")
+                    return
+                self._last_vengeance_text = text
+                suggestions = extract_combat_targets(text)
+                self._vengeance_suggestions = {}
+                labels = []
+                for item in suggestions:
+                    guild_bit = f" · [{item['guild']}]" if item.get("guild") else ""
+                    label = f"{item['name']}{guild_bit}"
+                    self._vengeance_suggestions[label] = item
+                    labels.append(label)
+                if labels:
+                    self.vengeance_suggestion_menu.configure(values=labels)
+                    self.vengeance_suggestion_var.set(labels[0])
+                    self._use_vengeance_suggestion(labels[0])
+                    self._refresh_vengeance_region_status(
+                        f"{len(labels)} name{'s' if len(labels) != 1 else ''} · {engine}"
+                    )
+                    self.show_toast(f"Found {len(labels)} combat target(s)", kind="ok")
+                else:
+                    empty = "No killer pattern found · type the name manually"
+                    self.vengeance_suggestion_menu.configure(values=[empty])
+                    self.vengeance_suggestion_var.set(empty)
+                    self._refresh_vengeance_region_status(f"no names · {engine}")
+                    self.show_toast("No name found — manual entry is ready", kind="warn")
+
+            self.schedule_ui(done)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def build_library_tab(self):
         tab = self.tabview.tab("Library")
@@ -11124,7 +11833,11 @@ class GamersChatHelper:
             pass
         return ""
 
-    def _ocr_image(self, img: "Image.Image") -> tuple[str, str]:
+    def _ocr_image(
+        self,
+        img: "Image.Image",
+        purpose: str = "chat",
+    ) -> tuple[str, str]:
         """Return (text, engine_name). Prefer VL when a vision model is selected."""
         self._last_ocr_error = ""
         prefer_vl = self._model_looks_vision() or getattr(self, "lm_mode", "Local") == "Remote"
@@ -11144,7 +11857,7 @@ class GamersChatHelper:
 
         def try_vl() -> tuple[str, str]:
             try:
-                txt = self._ocr_via_local_vl(img)
+                txt = self._ocr_via_local_vl(img, purpose=purpose)
                 if txt:
                     return txt, "LM Studio VL"
             except Exception as e:
@@ -11158,7 +11871,11 @@ class GamersChatHelper:
                 return txt, eng
         return "", "none"
 
-    def _ocr_via_local_vl(self, img: "Image.Image") -> str:
+    def _ocr_via_local_vl(
+        self,
+        img: "Image.Image",
+        purpose: str = "chat",
+    ) -> str:
         if not _HAS_PIL or base64 is None or io is None:
             self._last_ocr_error = "Pillow / base64 unavailable"
             return ""
@@ -11174,26 +11891,38 @@ class GamersChatHelper:
             "max_tokens": int(sampling.get("max_tokens", 280)),
             "stream": False,
         }
+        is_combat = purpose == "combat"
+        system_text = (
+            "You read MMO combat-log screenshots. Transcribe ONLY visible combat-log text, "
+            "one event per line. Preserve player names and bracketed guild tags exactly. "
+            "No commentary, labels, guesses, or markdown."
+            if is_combat
+            else (
+                "You read game chat screenshots. Output ONLY the chat text you see, "
+                "one message per line, oldest first / newest last. "
+                "No commentary, no labels, no markdown."
+            )
+        )
+        user_text = (
+            "Transcribe the visible combat events. Preserve killer/player names and [Guild] "
+            "tags exactly; ignore buttons and unrelated UI."
+            if is_combat
+            else "Transcribe the player chat messages in this screenshot. "
+            "Only chat lines (names + messages). Ignore UI chrome."
+        )
         payload = {
             "model": model,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You read game chat screenshots. Output ONLY the chat text you see, "
-                        "one message per line, oldest first / newest last. "
-                        "No commentary, no labels, no markdown."
-                    ),
+                    "content": system_text,
                 },
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": (
-                                "Transcribe the player chat messages in this screenshot. "
-                                "Only chat lines (names + messages). Ignore UI chrome."
-                            ),
+                            "text": user_text,
                         },
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],

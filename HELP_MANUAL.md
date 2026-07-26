@@ -80,7 +80,20 @@ Last capture: `last_chat_capture.png` next to the app.
 
 History and favorites: re-copy, star, delete. Manage stock lines.
 
-### 3.3 Calculator
+### 3.3 Vengeance List
+
+Track fictional in-game rivals:
+
+1. Choose **Player** or **Guild**.
+2. Type the target manually, or choose **Set combat log box** and drag over the game’s combat log.
+3. Choose **Capture + find names**. Confirm the detected name or guild before adding it.
+4. Select why they made the list and add optional context.
+5. Use **Settled** to retain the history without keeping the target active.
+
+Combat-log layouts differ between games, so manual entry always remains available.
+The last combat capture is stored locally as `last_vengeance_capture.png`.
+
+### 3.4 Calculator
 
 Simple pad with thousand separators (`1,000,000`).
 
@@ -88,7 +101,7 @@ Simple pad with thousand separators (`1,000,000`).
 - **⌨ Keys: On** — 0–9, numpad, + − * /, Enter, Backspace, Esc  
   Only while this tab is selected.
 
-### 3.4 Economy (market snap)
+### 3.5 Economy (market snap)
 
 There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
@@ -104,7 +117,7 @@ There is **no public Quinfall market API**. Economy reads **what is on screen**.
 
 **Best results:** vision model in LM Studio (e.g. Qwen3-VL), tight crop on the price list.
 
-### 3.5 Setup
+### 3.6 Setup
 
 - Full-width **Restart app**  
 - **Type size**  

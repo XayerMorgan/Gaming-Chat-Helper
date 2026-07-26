@@ -32,6 +32,11 @@
 ### Library
 - History + favorites + stock management  
 
+### Vengeance List
+- Track in-game player or guild rivals with a reason and optional notes
+- Calibrate a combat-log region; OCR suggests player names and bracketed guild tags
+- Mark targets settled/reopen them while retaining history
+
 ### Calculator
 - Four-function pad, comma formatting  
 - Optional keyboard capture mode (toggle)  
