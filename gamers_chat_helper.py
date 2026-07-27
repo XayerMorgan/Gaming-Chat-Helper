@@ -1628,6 +1628,7 @@ def _png_bytes(im: "Image.Image") -> bytes:
 class GamersChatHelper:
     def __init__(self, root: ctk.CTk):
         self.root = root
+        self.root.report_callback_exception = self._report_tk_callback_exception
         try:
             os.makedirs(CONTEXT_CAPTURE_DIR, exist_ok=True)
         except OSError:
@@ -3483,6 +3484,13 @@ class GamersChatHelper:
         except Exception:
             return False
 
+    def _report_tk_callback_exception(self, exc_type, exc_value, exc_traceback):
+        """Keep Tk callback failures visible in the diagnostic log."""
+        LOG.error(
+            "Unhandled Tk callback",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
     def _start_ui_queue_pump(self):
         """Begin draining the thread-safe UI queue on the main thread."""
         if getattr(self, "_ui_pump_started", False):
@@ -3494,19 +3502,26 @@ class GamersChatHelper:
         """Main-thread only: run queued UI callbacks, then reschedule."""
         if not getattr(self, "_alive", False):
             return
+        # Never drain without a ceiling. Several workers can finish together
+        # (AI, Steam, OCR, timer page); an unbounded loop can starve Tk's native
+        # event processing long enough for Windows to declare the app hung.
+        processed = 0
+        max_per_tick = 32
         try:
-            while True:
+            while processed < max_per_tick:
                 fn = self._ui_queue.get_nowait()
                 try:
                     fn()
                 except Exception:
-                    pass
+                    LOG.exception("Unhandled callback in UI queue")
+                processed += 1
         except queue.Empty:
             pass
         except Exception:
-            pass
+            LOG.exception("UI queue pump failed")
         try:
-            self.root.after(50, self._pump_ui_queue)
+            # Yield to paint/input before taking another bounded batch.
+            self.root.after(20 if processed == max_per_tick else 50, self._pump_ui_queue)
         except Exception:
             self._alive = False
 
@@ -7792,6 +7807,7 @@ class GamersChatHelper:
         self._render_boss_timer_cards([])
 
         self._boss_timer_loaded_url = ""
+        self._boss_timer_fetching_url = ""
         self.refresh_boss_timer_tab(load_page=False)
         self.root.after(60_000, self._boss_timer_auto_refresh)
 
@@ -7821,8 +7837,10 @@ class GamersChatHelper:
         if (
             load_page
             and (force or url != getattr(self, "_boss_timer_loaded_url", ""))
+            and url != getattr(self, "_boss_timer_fetching_url", "")
         ):
             self._boss_timer_loaded_url = url
+            self._boss_timer_fetching_url = url
             self.boss_timer_status.configure(
                 text="Refreshing event timers…",
                 text_color=C["muted"],
@@ -7850,6 +7868,8 @@ class GamersChatHelper:
         self.schedule_ui(lambda: self._finish_boss_timer_refresh(url, cards, error))
 
     def _finish_boss_timer_refresh(self, url: str, cards: list[dict], error: str):
+        if getattr(self, "_boss_timer_fetching_url", "") == url:
+            self._boss_timer_fetching_url = ""
         if url != self.active_boss_timer_url():
             return
         self._render_boss_timer_cards(cards, error)
