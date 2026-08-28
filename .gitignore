@@ -30,3 +30,4 @@ work/
 
 # Node (docx tooling)
 node_modules/
+.aider*
